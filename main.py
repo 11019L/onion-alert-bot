@@ -15,9 +15,9 @@ if not BOT_TOKEN:
     exit()
 
 FREE_ALERTS = 4  # 1 test + 3 real
-PRICE_USD = 29.99
-YOUR_BSC_WALLET = "0xYourBscWalletHere"  # CHANGE TO YOUR WALLET
-YOUR_SOL_WALLET = "YourSolanaWalletHere"  # CHANGE TO YOUR WALLET
+PRICE_USD = 19.99
+YOUR_BSC_WALLET = "0xa11351776d6f483418b73c8e40bc706c93e8b1e1"  # CHANGE TO YOUR WALLET
+YOUR_SOL_WALLET = "B4427oKJc3xnQf91kwXHX27u1SsVyB8GDQtc3NBxRtkK"  # CHANGE TO YOUR WALLET
 # =============
 
 logging.basicConfig(level=logging.INFO)
