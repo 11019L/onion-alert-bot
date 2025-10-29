@@ -94,4 +94,4 @@ async def poll_scanner(app):
                     f"**CA:** `{token['addr']}`\n"
                     f"Liq: ${token['liq']:,.0f} | FDV: ${token['fdv']:,.0f}\n"
                     f"5m Vol: ${token['vol5m']:,.0f}\n"
-                    f"[DexScreener](https://dexscreener.com
+                    f"[DexScreener](https://dexscreener.com/solana/{token['addr']})"
