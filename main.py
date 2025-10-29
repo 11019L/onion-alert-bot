@@ -80,56 +80,67 @@ async def send_test_alert(app):
             print(f"ERROR: {e}")
 
 # === COIN SCANNER ===
-async def coin_scanner(app):
-    async for ws in websockets.connect("wss://stream.dexscreener.com/ws"):
+# === WORKING POLL SCANNER — REAL CAs EVERY 5 MINS ===
+import aiohttp
+
+async def poll_scanner(app):
+    while True:
         try:
-            await ws.send(json.dumps({"method": "SUBSCRIBE", "params": ["newPairs"], "id": 1}))
-            async for msg in ws:
-                data = json.loads(msg)
-                if data.get("method") != "newPair": continue
-                pair = data["params"]["pair"]
-                chain = pair["chainId"]
-                if chain not in ["solana", "bsc"]: continue
+            async with aiohttp.ClientSession() as session:
+                # WORKING API: Search for new Solana pairs with USDC (catches new launches)
+                async with session.get("https://api.dexscreener.com/latest/dex/search/?q=solana") as resp:
+                    data = await resp.json()
+                    print(f"POLL: Found {len(data.get('pairs', []))} pairs")  # DEBUG
 
-                base = pair["baseToken"]
-                token = {
-                    "addr": base["address"],
-                    "symbol": base["symbol"],
-                    "chain": "SOL" if chain == "solana" else "BSC",
-                    "liq": float(pair["liquidity"].get("usd", 0)),
-                    "fdv": float(pair.get("fdv", 0)),
-                    "vol5m": float(pair["volume"].get("m5", 0)) or 1,
-                }
+                    for pair in data.get("pairs", [])[:10]:  # First 10 pairs
+                        base = pair.get("baseToken", {})
+                        liq = pair.get("liquidity", {}).get("usd", 0)
+                        fdv = pair.get("fdv", 0)
+                        vol5m = pair.get("volume", {}).get("m5", 0)
+                        symbol = base.get("symbol", "UNKNOWN")
+                        addr = base.get("address", "UNKNOWN")
 
-                if token["liq"] <= 0: continue
-                hist = volume_hist[token["addr"]]
-                hist.append(token["vol5m"])
-                if len(hist) < 1: continue
-                avg = max(sum(hist) / len(hist), 1)
-                if token["vol5m"] < 0.1 * avg: continue
+                        # === NO FILTERS — SEND EVERYTHING ===
+                        token = {
+                            "addr": addr,
+                            "symbol": symbol,
+                            "chain": "SOL",
+                            "liq": liq,
+                            "fdv": fdv,
+                            "vol5m": vol5m
+                        }
 
-                msg = (
-                    f"**ALPHA {token['chain']}**\n"
-                    f"`{token['symbol']}`\n"
-                    f"**CA:** `{token['addr']}`\n"
-                    f"Liq: ${token['liq']:,.0f} | FDV: ${token['fdv']:,.0f}\n"
-                    f"5m Vol: ${token['vol5m']:,.0f}\n"
-                    f"[DexScreener](https://dexscreener.com/{chain}/{token['addr']})"
-                )
+                        msg = (
+                            f"**NEW SOL TOKEN**\n"
+                            f"`{token['symbol']}`\n"
+                            f"**CA:** `{token['addr']}`\n"
+                            f"Liq: ${token['liq']:,.0f} | FDV: ${token['fdv']:,.0f}\n"
+                            f"5m Vol: ${token['vol5m']:,.0f}\n"
+                            f"[DexScreener](https://dexscreener.com/solana/{token['addr']})"
+                        )
 
-                for uid, data in list(users.items()):
-                    now = datetime.utcnow()
-                    if (data["subscribed_until"] and datetime.fromisoformat(data["subscribed_until"]) > now) or data["free_left"] > 0:
-                        try:
-                            await app.bot.send_message(uid, msg, parse_mode="Markdown", disable_web_page_preview=True)
-                            print(f"REAL ALERT SENT TO {uid}")
-                            if data["free_left"] > 0:
-                                data["free_left"] -= 1
-                        except Exception as e:
-                            print(f"ERROR: {e}")
+                        # Send to ALL users
+                        sent = 0
+                        for uid, data in list(users.items()):
+                            now = datetime.utcnow()
+                            if (data.get("subscribed_until") and datetime.fromisoformat(data["subscribed_until"]) > now) or data["free_left"] > 0:
+                                try:
+                                    await app.bot.send_message(uid, msg, parse_mode="Markdown", disable_web_page_preview=True)
+                                    print(f"SENT TO {uid}: {symbol} ({addr[:8]}...)")
+                                    sent += 1
+                                    if data["free_left"] > 0:
+                                        data["free_left"] -= 1
+                                except Exception as e:
+                                    print(f"Send error to {uid}: {e}")
+                        print(f"POLL ALERT SENT: {sent} users got {symbol}")
+
+            await asyncio.sleep(300)  # Every 5 mins
         except Exception as e:
-            logging.error(f"WS Error: {e}")
-            await asyncio.sleep(5)
+            print(f"POLL ERROR: {e}")
+            await asyncio.sleep(60)
+
+# In main():
+asyncio.create_task(poll_scanner(app))
 
 # === START BOT ===
 app = Application.builder().token(BOT_TOKEN).build()
