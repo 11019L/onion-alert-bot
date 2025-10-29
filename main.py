@@ -88,10 +88,11 @@ async def poll_scanner(app):
                     "vol5m": pair.get("volume", {}).get("m5", 0)
                 }
 
-                msg = (
-                    f"**NEW SOL TOKEN**\n"
-                    f"`{token['symbol']}`\n"
-                    f"**CA:** `{token['addr']}`\n"
-                    f"Liq: ${token['liq']:,.0f} | FDV: ${token['fdv']:,.0f}\n"
-                    f"5m Vol: ${token['vol5m']:,.0f}\n"
-                    f"[DexScreener](https://dexscreener.com/solana/{token['addr']})"
+               msg = (
+    f"**NEW SOL TOKEN**\n"
+    f"`{token['symbol']}`\n"
+    f"**CA:** `{token['addr']}`\n"
+    f"Liq: ${token['liq']:,.0f} | FDV: ${token['fdv']:,.0f}\n"
+    f"5m Vol: ${token['vol5m']:,.0f}\n"
+    f"[DexScreener](https://dexscreener.com/solana/{token['addr']})"
+)
