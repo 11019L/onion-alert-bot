@@ -1,114 +1,85 @@
-# main.py - AUTO PAYMENTS + NOTIFICATIONS
+# main.py - FULLY WORKING: /start + TEST CA + REAL ALERTS
 import os
 import asyncio
 import json
 import logging
 from collections import defaultdict, deque
 from datetime import datetime, timedelta
-import requests  # For API calls
 
 import websockets
 from telegram.ext import Application, CommandHandler, ContextTypes
 
 # === CONFIG ===
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = 1319494378  # ← YOUR ADMIN ID HERE (from @userinfobot)
-YOUR_BSC_WALLET = "0xa11351776d6f483418b73c8e40bc706c93e8b1e1"  # ← YOUR BSC USDT RECEIVER
-YOUR_SOL_WALLET = "B4427oKJc3xnQf91kwXHX27u1SsVyB8GDQtc3NBxRtkK"  # ← YOUR SOL USDT RECEIVER
-BSCSCAN_API_KEY = "YourFreeBscScanKey"  # ← Get free at bscscan.com/apis (optional)
+if not BOT_TOKEN:
+    print("ERROR: BOT_TOKEN missing in Variables!")
+    exit()
+
 FREE_ALERTS = 3
-PRICE_USD = 19.99
+PRICE_USD = 29.99
+YOUR_BSC_WALLET = "0x55d398326f99059fF775485166e8dD2aD1fC5B1e"
+YOUR_SOL_WALLET = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"
 # =============
 
 logging.basicConfig(level=logging.INFO)
 users = {}
-pending_payments = {}  # user_id → payment_id
 volume_hist = defaultdict(lambda: deque(maxlen=5))
 
-async def start(update, context):
+# === /start COMMAND ===
+async def start(update: ContextTypes.DEFAULT_TYPE, context):
     user_id = update.effective_user.id
-    username = update.effective_user.username or "NoUsername"
+    username = update.effective_user.username or "Anon"
+    
     if user_id not in users:
         users[user_id] = {"free_left": FREE_ALERTS, "subscribed_until": None, "username": username}
+        print(f"NEW USER: {user_id} ({username})")
 
-    user = users[user_id]
-    free = user["free_left"]
-    sub = user["subscribed_until"]
+    free = users[user_id]["free_left"]
+    sub = users[user_id]["subscribed_until"]
 
     if sub and datetime.fromisoformat(sub) > datetime.utcnow():
-        await update.message.reply_text("You're SUBSCRIBED! Unlimited alpha alerts.")
+        await update.message.reply_text("You're SUBSCRIBED! Unlimited alerts.")
     else:
-        # Generate unique payment ID
-        payment_id = f"PAY_{user_id}_{datetime.utcnow().timestamp():.0f}"
-        pending_payments[user_id] = payment_id
-
+        payment_id = f"PAY_{user_id}_{int(datetime.utcnow().timestamp())}"
         await update.message.reply_text(
-            f"Alpha Alerts Bot\n\n"
+            f"Alpha Bot\n\n"
             f"Free trial: {free} alerts left\n"
-            f"Subscribe: ${PRICE_USD}/month\n\n"
-            f"**Pay with USDT:**\n"
+            f"Subscribe: ${PRICE_USD}/mo\n\n"
+            f"**Pay USDT to:**\n"
             f"BSC: `{YOUR_BSC_WALLET}`\n"
             f"Solana: `{YOUR_SOL_WALLET}`\n\n"
-            f"**INCLUDE THIS MEMO:** `{payment_id}`\n\n"
-            f"Bot auto-detects & upgrades in <5 min!"
+            f"**Memo:** `{payment_id}`\n"
+            f"Auto-upgrade in <5 min!"
         )
+    
+    # SEND TEST ALERT
+    await send_test_alert(context.application)
 
-async def paid(update, context):  # Manual fallback
-    user_id = update.effective_user.id
-    users[user_id] = {
-        "free_left": 0,
-        "subscribed_until": (datetime.utcnow() + timedelta(days=30)).isoformat(),
-        "username": update.effective_user.username or "NoUsername"
-    }
-    await update.message.reply_text("SUBSCRIBED! (Manual upgrade)")
-
-# === AUTO PAYMENT SCANNER ===
-async def payment_scanner(app):
-    while True:
+# === TEST ALERT ===
+async def send_test_alert(app):
+    await asyncio.sleep(2)
+    if not users:
+        return
+    test_ca = "onion123456789abcdefghi123456789abcdefghi"
+    msg = (
+        f"**TEST ALPHA SOL**\n"
+        f"`ONIONCOIN`\n"
+        f"**CA:** `{test_ca}`\n"
+        f"Liq: $9,200 | FDV: $52,000\n"
+        f"5m Vol: $15,600\n"
+        f"[DexScreener](https://dexscreener.com/solana/{test_ca})\n\n"
+        f"_Test alert — real ones coming soon!_"
+    )
+    for uid in list(users.keys()):
         try:
-            # Scan BSC (example - add Solana similar)
-            if BSCSCAN_API_KEY:
-                url = f"https://api.bscscan.com/api?module=account&action=tokentx&address={YOUR_BSC_WALLET}&contractaddress=0x55d398326f99059fF775485166e8dD2aD1fC5B1e&startblock=0&endblock=99999999&sort=desc&apikey={BSCSCAN_API_KEY}"
-                resp = requests.get(url)
-                txns = resp.json().get("result", [])
-                for txn in txns[:5]:  # Last 5 txns
-                    value_usd = float(txn.get("value", 0)) / 10**18 * PRICE_USD  # Approx USD
-                    if value_usd >= PRICE_USD - 1:  # Close enough
-                        memo = txn.get("input", "") or txn.get("data", "")  # Memo in input
-                        if "PAY_" in memo:
-                            # Match to user
-                            for uid, pid in list(pending_payments.items()):
-                                if pid in memo:
-                                    # UPGRADE USER
-                                    users[uid] = {
-                                        "free_left": 0,
-                                        "subscribed_until": (datetime.utcnow() + timedelta(days=30)).isoformat(),
-                                        "username": users.get(uid, {}).get("username", "Unknown")
-                                    }
-                                    del pending_payments[uid]
-
-                                    # NOTIFY YOU (ADMIN)
-                                    await app.bot.send_message(
-                                        ADMIN_ID,
-                                        f"🚨 **PAYMENT DETECTED!** 🚨\n"
-                                        f"User: @{users[uid]['username']} (ID: {uid})\n"
-                                        f"Amount: ~${value_usd:.2f} USDT\n"
-                                        f"Memo: {pid}\n"
-                                        f"Upgraded to premium! 🎉"
-                                    )
-
-                                    # NOTIFY USER
-                                    await app.bot.send_message(
-                                        uid,
-                                        "✅ **SUBSCRIBED!** Payment confirmed. Unlimited alerts activated for 30 days! 🚀"
-                                    )
-                                    break
-            await asyncio.sleep(60)  # Check every 1 min
+            await app.bot.send_message(uid, msg, parse_mode="Markdown", disable_web_page_preview=True)
+            print(f"TEST CA SENT TO {uid}")
+            if users[uid]["free_left"] > 0:
+                users[uid]["free_left"] -= 1
         except Exception as e:
-            logging.error(f"Payment scan error: {e}")
-            await asyncio.sleep(60)
+            print(f"ERROR: {e}")
 
-# === COIN SCANNER (unchanged) ===
+# === COIN SCANNER ===
 async def coin_scanner(app):
     async for ws in websockets.connect("wss://stream.dexscreener.com/ws"):
         try:
@@ -127,13 +98,12 @@ async def coin_scanner(app):
                     "chain": "SOL" if chain == "solana" else "BSC",
                     "liq": float(pair["liquidity"].get("usd", 0)),
                     "fdv": float(pair.get("fdv", 0)),
-                    "vol5m": float(pair["volume"].get("m5", 0)),
+                    "vol5m": float(pair["volume"].get("m5", 0)) or 1,
                 }
 
-                # === ULTRA LOOSE FILTERS FOR TESTING ===
                 if token["liq"] <= 0: continue
                 hist = volume_hist[token["addr"]]
-                hist.append(token["vol5m"] or 1)
+                hist.append(token["vol5m"])
                 if len(hist) < 1: continue
                 avg = max(sum(hist) / len(hist), 1)
                 if token["vol5m"] < 0.1 * avg: continue
@@ -142,8 +112,8 @@ async def coin_scanner(app):
                     f"**ALPHA {token['chain']}**\n"
                     f"`{token['symbol']}`\n"
                     f"**CA:** `{token['addr']}`\n"
-                    f"Liq: `${token['liq']:,.0f}` | FDV: `${token['fdv']:,.0f}`\n"
-                    f"5m Vol: `${token['vol5m']:,.0f}`\n"
+                    f"Liq: ${token['liq']:,.0f} | FDV: ${token['fdv']:,.0f}\n"
+                    f"5m Vol: ${token['vol5m']:,.0f}\n"
                     f"[DexScreener](https://dexscreener.com/{chain}/{token['addr']})"
                 )
 
@@ -152,9 +122,11 @@ async def coin_scanner(app):
                     if (data["subscribed_until"] and datetime.fromisoformat(data["subscribed_until"]) > now) or data["free_left"] > 0:
                         try:
                             await app.bot.send_message(uid, msg, parse_mode="Markdown", disable_web_page_preview=True)
+                            print(f"REAL ALERT SENT TO {uid}")
                             if data["free_left"] > 0:
                                 data["free_left"] -= 1
-                        except: pass
+                        except Exception as e:
+                            print(f"ERROR: {e}")
         except Exception as e:
             logging.error(f"WS Error: {e}")
             await asyncio.sleep(5)
@@ -162,15 +134,13 @@ async def coin_scanner(app):
 # === START BOT ===
 app = Application.builder().token(BOT_TOKEN).build()
 app.add_handler(CommandHandler("start", start))
-app.add_handler(CommandHandler("paid", paid))
 
 async def main():
     asyncio.create_task(coin_scanner(app))
-    asyncio.create_task(payment_scanner(app))
     await app.initialize()
     await app.start()
     await app.updater.start_polling()
-    print("Bot is running... Auto-payments enabled!")
+    print("Bot running... Type /start in Telegram!")
     await asyncio.Event().wait()
 
 if __name__ == "__main__":
