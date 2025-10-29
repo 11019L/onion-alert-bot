@@ -54,6 +54,8 @@ async def start(update: ContextTypes.DEFAULT_TYPE, context):
         f"Liq: $1,800 | FDV: $3,100\n"
         f"5m Vol: $1,200\n"
         f"[DexScreener](https://dexscreener.com/solana/3pzgwrwusc5d92pbjqltwlqxnyrq86jkbf2ov3fh4dpd)"
+
+        f"Test alert-- real once coming soon"
     )
     try:
         await context.bot.send_message(user_id, test_msg, parse_mode="Markdown", disable_web_page_preview=True)
