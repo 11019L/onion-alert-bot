@@ -1,10 +1,9 @@
-# main.py - ONION ALERTS: 1 TEST + 3 REAL ALPHA CAs (FREE TRIAL)
+# main.py - ONION ALERTS: EXACT FORMAT + 1 TEST + 3 REAL
 import os
 import asyncio
-import json
 import logging
 from collections import defaultdict, deque
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from telegram.ext import Application, CommandHandler, ContextTypes
 
@@ -14,10 +13,10 @@ if not BOT_TOKEN:
     print("ERROR: Add BOT_TOKEN in Railway Variables!")
     exit()
 
-FREE_ALERTS = 4  # 1 test + 3 real
+FREE_ALERTS = 3  # 3 real alerts after test
 PRICE_USD = 19.99
-YOUR_BSC_WALLET = "0xa11351776d6f483418b73c8e40bc706c93e8b1e1"  # CHANGE TO YOUR WALLET
-YOUR_SOL_WALLET = "B4427oKJc3xnQf91kwXHX27u1SsVyB8GDQtc3NBxRtkK"  # CHANGE TO YOUR WALLET
+YOUR_BSC_WALLET = "0xa11351776d6f483418b73c8e40bc706c93e8b1e1"
+YOUR_SOL_WALLET = "B4427oKJc3xnQf91kwXHX27u1SsVyB8GDQtc3NBxRtkK"
 # =============
 
 logging.basicConfig(level=logging.INFO)
@@ -25,7 +24,7 @@ users = {}
 volume_hist = defaultdict(lambda: deque(maxlen=5))
 seen_tokens = set()
 
-# === /start: WELCOME + 1 TEST CA ===
+# === /start: EXACT FORMAT ===
 async def start(update: ContextTypes.DEFAULT_TYPE, context):
     user_id = update.effective_user.id
     username = update.effective_user.username or "Anon"
@@ -37,40 +36,42 @@ async def start(update: ContextTypes.DEFAULT_TYPE, context):
     free = users[user_id]["free_left"]
     payment_id = f"PAY_{user_id}_{int(datetime.utcnow().timestamp())}"
     
+    # === WELCOME MESSAGE ===
     await update.message.reply_text(
-        f"ONION ALERTS\n\n"
-        f"Free trial: {free} alerts (1 test + 3 real)\n"
-        f"Subscribe: ${PRICE_USD}/mo → YOUR WALLET\n\n"
-        f"**Pay USDT + Memo:** `{payment_id}`\n"
+        f"Alpha Bot\n\n"
+        f"Free trial: {free} alerts left\n"
+        f"Subscribe: ${PRICE_USD}/mo\n\n"
+        f"**Pay USDT to:**\n"
         f"BSC: `{YOUR_BSC_WALLET}`\n"
-        f"Solana: `{YOUR_SOL_WALLET}`"
+        f"Solana: `{YOUR_SOL_WALLET}`\n\n"
+        f"**Memo:** `{payment_id}`\n"
+        f"Auto-upgrade in <5 min!"
     )
 
-    # SEND 1 TEST CA (uses 1 alert)
+    # === TEST ALERT ===
     test_msg = (
-        f"**ALPHA SOL**\n"
-        f"`ONION`\n"
-        f"**CA:** `3pzgwrwusc5d92pbjqltwlqxnyrq86jkbf2ov3fh4dpd`\n"
-        f"Liq: $1,800 | FDV: $3,100\n"
-        f"5m Vol: $1,200\n"
-        f"[DexScreener](https://dexscreener.com/solana/3pzgwrwusc5d92pbjqltwlqxnyrq86jkbf2ov3fh4dpd)"
-
-        f"Test alert-- real once coming soon"
+        f"**TEST ALPHA SOL**\n"
+        f"`ONIONCOIN`\n"
+        f"**CA:** `onion123456789abcdefghi123456789abcdefghi`\n"
+        f"Liq: $9,200 | FDV: $52,000\n"
+        f"5m Vol: $15,600\n"
+        f"[DexScreener](https://dexscreener.com/solana/onion123456789abcdefghi123456789abcdefghi)\n\n"
+        f"_Test alert — real ones coming soon!_"
     )
     try:
         await context.bot.send_message(user_id, test_msg, parse_mode="Markdown", disable_web_page_preview=True)
-        users[user_id]["free_left"] -= 1
-        print(f"TEST CA SENT TO {user_id}")
+        if users[user_id]["free_left"] > 0:
+            users[user_id]["free_left"] -= 1
+        print(f"TEST ALERT SENT TO {user_id}")
     except Exception as e:
         print(f"TEST SEND ERROR: {e}")
 
-# === REAL ALPHA SCANNER (3 REAL CAs) ===
+# === REAL ALPHA SCANNER (3 REAL ALERTS) ===
 async def alpha_scanner(app):
     import aiohttp
     async with aiohttp.ClientSession() as session:
         while True:
             try:
-                print("SCANNING FOR REAL ALPHA...")
                 async with session.get("https://api.dexscreener.com/latest/dex/search/?q=solana") as resp:
                     if resp.status != 200:
                         await asyncio.sleep(60)
@@ -100,14 +101,14 @@ async def alpha_scanner(app):
                         avg = sum(hist) / len(hist)
                         if vol5m < 2 * avg: continue
 
-                        # === SEND TO USERS (3 REAL) ===
+                        # === SEND REAL ALPHA ===
                         seen_tokens.add(addr)
                         msg = (
-                            f"**REAL ALPHA SOL**\n"
+                            f"**ALPHA SOL**\n"
                             f"`{symbol}`\n"
                             f"**CA:** `{addr}`\n"
                             f"Liq: ${liq:,.0f} | FDV: ${fdv:,.0f}\n"
-                            f"5m Vol: ${vol5m:,.0f} (↑{vol5m/avg:.1f}x)\n"
+                            f"5m Vol: ${vol5m:,.0f}\n"
                             f"[DexScreener](https://dexscreener.com/solana/{addr})"
                         )
 
