@@ -130,12 +130,13 @@ async def coin_scanner(app):
                     "vol5m": float(pair["volume"].get("m5", 0)),
                 }
 
-                if token["liq"] > 50000 or token["fdv"] > 500000: continue
+                # === ULTRA LOOSE FILTERS FOR TESTING ===
+                if token["liq"] <= 0: continue
                 hist = volume_hist[token["addr"]]
-                hist.append(token["vol5m"])
-                if len(hist) < 2: continue
-                avg = sum(hist) / len(hist)
-                if token["vol5m"] < 3 * avg: continue
+                hist.append(token["vol5m"] or 1)
+                if len(hist) < 1: continue
+                avg = max(sum(hist) / len(hist), 1)
+                if token["vol5m"] < 0.1 * avg: continue
 
                 msg = (
                     f"**ALPHA {token['chain']}**\n"
