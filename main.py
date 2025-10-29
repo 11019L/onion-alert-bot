@@ -16,7 +16,7 @@ if not BOT_TOKEN:
     exit()
 
 FREE_ALERTS = 3
-PRICE_USD = 29.99
+PRICE_USD = 19.99
 YOUR_BSC_WALLET = "0xYourBscWallet"
 YOUR_SOL_WALLET = "YourSolanaWallet"
 # =============
@@ -69,6 +69,7 @@ async def send_test_ca(app):
         except: pass
 
 # === POLL SCANNER (REAL CAs EVERY 5 MINS) ===
+# === POLL SCANNER (REAL CAs EVERY 5 MINS) ===
 async def poll_scanner(app):
     while True:
         try:
@@ -87,6 +88,29 @@ async def poll_scanner(app):
                     "fdv": pair.get("fdv", 0),
                     "vol5m": pair.get("volume", {}).get("m5", 0)
                 }
+
+                msg = (
+                    f"**NEW SOL TOKEN**\n"
+                    f"`{token['symbol']}`\n"
+                    f"**CA:** `{token['addr']}`\n"
+                    f"Liq: ${token['liq']:,.0f} | FDV: ${token['fdv']:,.0f}\n"
+                    f"5m Vol: ${token['vol5m']:,.0f}\n"
+                    f"[DexScreener](https://dexscreener.com/solana/{token['addr']})"
+                )
+
+                for uid, data in list(users.items()):
+                    if data["free_left"] > 0 or data.get("subscribed_until"):
+                        try:
+                            await app.bot.send_message(uid, msg, parse_mode="Markdown")
+                            print(f"REAL CA SENT TO {uid}")
+                            if data["free_left"] > 0:
+                                data["free_left"] -= 1
+                        except: pass
+
+            await asyncio.sleep(300)
+        except Exception as e:
+            print(f"POLL ERROR: {e}")
+            await asyncio.sleep(60)
 
                msg = (
     f"**NEW SOL TOKEN**\n"
