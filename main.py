@@ -7,7 +7,7 @@ from collections import defaultdict, deque
 from datetime import datetime, timedelta
 
 import websockets
-from telegram import Bot, Update
+from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
 # === CONFIG ===
@@ -16,7 +16,6 @@ FREE_ALERTS = 3
 PRICE_USD = 29.99
 # =============
 
-bot = Bot(token=BOT_TOKEN)
 logging.basicConfig(level=logging.INFO)
 
 users = {}
@@ -101,7 +100,7 @@ async def scanner():
                             data["subscribed_until"])
                             > now) or data["free_left"] > 0:
                         try:
-                            await bot.send_message(
+                            await app.bot.send_message(
                                 uid,
                                 msg,
                                 parse_mode="Markdown",
@@ -125,7 +124,7 @@ async def main():
     await app.initialize()
     await app.start()
     await app.updater.start_polling()
-    print("Bot is running...")
+    print("Bot is running... Send /start to begin")
     await asyncio.Event().wait()
 
 
