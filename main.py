@@ -67,11 +67,13 @@ async def start(update: ContextTypes.DEFAULT_TYPE, context):
         print(f"TEST SEND ERROR: {e}")
 
 # === REAL ALPHA SCANNER (3 REAL ALERTS) ===
+# === REAL ALPHA SCANNER (LOOSER FILTERS: 1-3/HOUR) ===
 async def alpha_scanner(app):
     import aiohttp
     async with aiohttp.ClientSession() as session:
         while True:
             try:
+                print("SCANNING FOR REAL ALPHA...")
                 async with session.get("https://api.dexscreener.com/latest/dex/search/?q=solana") as resp:
                     if resp.status != 200:
                         await asyncio.sleep(60)
@@ -90,25 +92,26 @@ async def alpha_scanner(app):
                         vol5m = pair.get("volume", {}).get("m5", 0)
                         symbol = base.get("symbol", "UNKNOWN")
 
-                        # === ALPHA FILTERS ===
-                        if liq <= 0 or liq > 25000: continue
-                        if fdv > 200000: continue
-                        if vol5m < 1000: continue
+                        # === LOOSER ALPHA FILTERS ===
+                        if liq <= 0 or liq > 50000: continue  # < $50K (more room)
+                        if fdv > 500000: continue             # < $500K
+                        if vol5m < 500: continue               # Min vol $500
                         
+                        # Volume spike (1.5x instead of 2x)
                         hist = volume_hist[addr]
                         hist.append(vol5m)
                         if len(hist) < 2: continue
                         avg = sum(hist) / len(hist)
-                        if vol5m < 2 * avg: continue
+                        if vol5m < 1.5 * avg: continue
 
-                        # === SEND REAL ALPHA ===
+                        # === SEND ===
                         seen_tokens.add(addr)
                         msg = (
                             f"**ALPHA SOL**\n"
                             f"`{symbol}`\n"
                             f"**CA:** `{addr}`\n"
                             f"Liq: ${liq:,.0f} | FDV: ${fdv:,.0f}\n"
-                            f"5m Vol: ${vol5m:,.0f}\n"
+                            f"5m Vol: ${vol5m:,.0f} (↑{vol5m/avg:.1f}x)\n"
                             f"[DexScreener](https://dexscreener.com/solana/{addr})"
                         )
 
@@ -118,12 +121,13 @@ async def alpha_scanner(app):
                             if data["free_left"] > 0 or data.get("subscribed_until"):
                                 try:
                                     await app.bot.send_message(uid, msg, parse_mode="Markdown", disable_web_page_preview=True)
-                                    print(f"REAL ALPHA SENT TO {uid}")
+                                    print(f"ALPHA SENT TO {uid}: {symbol}")
                                     sent += 1
                                     if data["free_left"] > 0:
                                         data["free_left"] -= 1
-                                except: pass
-                        print(f"{sent} USERS GOT REAL ALPHA: {symbol}")
+                                except Exception as e:
+                                    print(f"SEND ERROR: {e}")
+                        print(f"{sent} USERS GOT ALPHA: {symbol}")
 
                 await asyncio.sleep(60)
             except Exception as e:
