@@ -1,4 +1,4 @@
-# main.py - ONION ALERTS: EXACT FORMAT + 1 TEST + 3 REAL
+# main.py - FIXED: REAL NEW PAIRS API + 1 TEST + 3 REAL
 import os
 import asyncio
 import logging
@@ -13,7 +13,7 @@ if not BOT_TOKEN:
     print("ERROR: Add BOT_TOKEN in Railway Variables!")
     exit()
 
-FREE_ALERTS = 3  # 3 real alerts after test
+FREE_ALERTS = 3  # 3 real after test
 PRICE_USD = 19.99
 YOUR_BSC_WALLET = "0xa11351776d6f483418b73c8e40bc706c93e8b1e1"
 YOUR_SOL_WALLET = "B4427oKJc3xnQf91kwXHX27u1SsVyB8GDQtc3NBxRtkK"
@@ -21,7 +21,6 @@ YOUR_SOL_WALLET = "B4427oKJc3xnQf91kwXHX27u1SsVyB8GDQtc3NBxRtkK"
 
 logging.basicConfig(level=logging.INFO)
 users = {}
-volume_hist = defaultdict(lambda: deque(maxlen=5))
 seen_tokens = set()
 
 # === /start: EXACT FORMAT ===
@@ -36,7 +35,6 @@ async def start(update: ContextTypes.DEFAULT_TYPE, context):
     free = users[user_id]["free_left"]
     payment_id = f"PAY_{user_id}_{int(datetime.utcnow().timestamp())}"
     
-    # === WELCOME MESSAGE ===
     await update.message.reply_text(
         f"Alpha Bot\n\n"
         f"Free trial: {free} alerts left\n"
@@ -60,28 +58,29 @@ async def start(update: ContextTypes.DEFAULT_TYPE, context):
     )
     try:
         await context.bot.send_message(user_id, test_msg, parse_mode="Markdown", disable_web_page_preview=True)
-        if users[user_id]["free_left"] > 0:
-            users[user_id]["free_left"] -= 1
+        users[user_id]["free_left"] -= 1
         print(f"TEST ALERT SENT TO {user_id}")
     except Exception as e:
         print(f"TEST SEND ERROR: {e}")
 
-# === REAL ALPHA SCANNER (3 REAL ALERTS) ===
-# === REAL ALPHA SCANNER (LOOSER FILTERS: 1-3/HOUR) ===
+# === FIXED SCANNER: NEW PAIRS API (1-3/HOUR) ===
 async def alpha_scanner(app):
     import aiohttp
     async with aiohttp.ClientSession() as session:
         while True:
             try:
-                print("SCANNING FOR REAL ALPHA...")
-                async with session.get("https://api.dexscreener.com/latest/dex/search/?q=solana") as resp:
+                print("SCANNING NEW PAIRS...")
+                # FIXED API: NEW PAIRS (not search)
+                async with session.get("https://api.dexscreener.com/latest/dex/pairs/solana") as resp:
                     if resp.status != 200:
+                        print(f"API ERROR: {resp.status}")
                         await asyncio.sleep(60)
                         continue
                     data = await resp.json()
                     pairs = data.get("pairs", [])
+                    print(f"NEW PAIRS FOUND: {len(pairs)}")
 
-                    for pair in pairs:
+                    for pair in pairs[:10]:  # Check latest 10
                         base = pair.get("baseToken", {})
                         addr = base.get("address", "")
                         if not addr or addr in seen_tokens: 
@@ -92,12 +91,12 @@ async def alpha_scanner(app):
                         vol5m = pair.get("volume", {}).get("m5", 0)
                         symbol = base.get("symbol", "UNKNOWN")
 
-                        # === LOOSER ALPHA FILTERS ===
-                        if liq <= 0 or liq > 50000: continue  # < $50K (more room)
+                        # === LOOSE FILTERS: MORE ALERTS ===
+                        if liq <= 0 or liq > 50000: continue  # < $50K
                         if fdv > 500000: continue             # < $500K
                         if vol5m < 500: continue               # Min vol $500
                         
-                        # Volume spike (1.5x instead of 2x)
+                        # 1.5x spike
                         hist = volume_hist[addr]
                         hist.append(vol5m)
                         if len(hist) < 2: continue
@@ -111,7 +110,7 @@ async def alpha_scanner(app):
                             f"`{symbol}`\n"
                             f"**CA:** `{addr}`\n"
                             f"Liq: ${liq:,.0f} | FDV: ${fdv:,.0f}\n"
-                            f"5m Vol: ${vol5m:,.0f} (↑{vol5m/avg:.1f}x)\n"
+                            f"5m Vol: ${vol5m:,.0f}\n"
                             f"[DexScreener](https://dexscreener.com/solana/{addr})"
                         )
 
@@ -125,8 +124,7 @@ async def alpha_scanner(app):
                                     sent += 1
                                     if data["free_left"] > 0:
                                         data["free_left"] -= 1
-                                except Exception as e:
-                                    print(f"SEND ERROR: {e}")
+                                except: pass
                         print(f"{sent} USERS GOT ALPHA: {symbol}")
 
                 await asyncio.sleep(60)
@@ -143,7 +141,7 @@ async def main():
     await app.initialize()
     await app.start()
     await app.updater.start_polling()
-    print("ONION ALERTS LIVE — 1 TEST + 3 REAL")
+    print("ONION ALERTS LIVE — NEW PAIRS API")
     await asyncio.Event().wait()
 
 if __name__ == "__main__":
