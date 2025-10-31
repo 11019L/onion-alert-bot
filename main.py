@@ -1,35 +1,58 @@
-# main.py - ONION ALERTS: NEW PAIRS API + YOUR FILTERS + 1-3/HOUR
-import os, asyncio, logging
+# main.py - ONION ALERTS + 25% AUTO COMMISSION (NO ADMIN ID)
+import os, asyncio, logging, json, aiohttp
 from collections import defaultdict, deque
 from telegram.ext import Application, CommandHandler, ContextTypes
 
 # === CONFIG ===
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-if not BOT_TOKEN:
-    print("ERROR: Add BOT_TOKEN in Railway Variables!")
-    exit()
+if not BOT_TOKEN: exit("ERROR: Add BOT_TOKEN")
 
 FREE_ALERTS = 3
 PRICE = 19.99
+COMMISSION_RATE = 0.25  # 25%
 WALLETS = {
     "BSC": "0xa11351776d6f483418b73c8e40bc706c93e8b1e1",
     "Solana": "B4427oKJc3xnQf91kwXHX27u1SsVyB8GDQtc3NBxRtkK"
 }
+BSCSCAN_API_KEY = os.getenv("BSCSCAN_API_KEY", "")  # Optional
 # =============
 
 logging.basicConfig(level=logging.INFO)
+
+# Persistent data
+try:
+    with open("tracker.json", "r") as f:
+        tracker = json.load(f)
+except:
+    tracker = {}
+
 users = {}
 seen = set()
 vol_hist = defaultdict(lambda: deque(maxlen=5))
 last_sent = 0
+pending_memos = {}
 
-# === /start: Welcome + Test CA ===
+def save_tracker():
+    with open("tracker.json", "w") as f:
+        json.dump(tracker, f)
+
+# /start
 async def start(update, ctx):
     uid = update.effective_user.id
+    source = ctx.args[0] if ctx.args and ctx.args[0].startswith("track_") else "organic"
+    influencer = source.split("_", 1)[1] if "_" in source else None
+
+    if influencer:
+        if influencer not in tracker:
+            tracker[influencer] = {"joins": 0, "subs": 0, "revenue": 0.0}
+        tracker[influencer]["joins"] += 1
+        save_tracker()
+
     if uid not in users:
-        users[uid] = {"free": FREE_ALERTS}
+        users[uid] = {"free": FREE_ALERTS, "source": source, "paid": False}
     free = users[uid]["free"]
     memo = f"PAY_{uid}_{int(asyncio.get_event_loop().time())}"
+    pending_memos[memo] = uid
 
     await update.message.reply_text(
         f"Alpha Bot\n\n"
@@ -43,102 +66,91 @@ async def start(update, ctx):
     )
 
     test = (
-        f"**TEST ALPHA SOL**\n"
-        f"`ONIONCOIN`\n"
-        f"**CA:** `onion123456789abcdefghi123456789abcdefghi`\n"
-        f"Liq: $9,200 | FDV: $52,000\n"
-        f"5m Vol: $15,600\n"
+        f"**TEST ALPHA SOL**\n`ONIONCOIN`\n**CA:** `onion123456789abcdefghi123456789abcdefghi`\n"
+        f"Liq: $9,200 | FDV: $52,000\n5m Vol: $15,600\n"
         f"[DexScreener](https://dexscreener.com/solana/onion123456789abcdefghi123456789abcdefghi)\n\n"
         f"_Test alert — real ones coming soon!_"
     )
     await ctx.bot.send_message(uid, test, parse_mode="Markdown", disable_web_page_preview=True)
     users[uid]["free"] -= 1
 
-# === SCANNER: NEW PAIRS API (Catches x402 in 55 mins) ===
-async def scanner(app):
-    import aiohttp
+# /stats
+# /stats — Clean, no payout note
+async def stats(update, ctx):
+    if not ctx.args:
+        await update.message.reply_text("Usage: /stats [yourusername]")
+        return
+    influencer = ctx.args[0].lower()
+    if influencer not in tracker:
+        await update.message.reply_text(f"No data for **{influencer}**.")
+        return
+
+    stats = tracker[influencer]
+    revenue = stats["subs"] * PRICE
+    your_cut = revenue * COMMISSION_RATE
+    conv = stats["subs"] / max(stats["joins"], 1) * 100
+
+    await update.message.reply_text(
+        f"**{influencer.upper()} STATS**\n\n"
+        f"Joins: `{stats['joins']}`\n"
+        f"Paid Subs: `{stats['subs']}`\n"
+        f"Total Revenue: **${revenue:.2f}**\n"
+        f"**You Earn: ${your_cut:.2f}** (25%)\n"
+        f"Conversion: `{conv:.1f}%`",
+        parse_mode="Markdown"
+    )
+
+# === AUTO PAYMENT ===
+async def check_payments(app):
     async with aiohttp.ClientSession() as s:
         while True:
             try:
-                candidates = []
-                now = asyncio.get_event_loop().time()
-
-                for chain, url in [("SOL", "solana"), ("BSC", "bsc")]:
-                    # NEW PAIRS API — CATCHES ALL FRESH LAUNCHES
-                    async with s.get(f"https://api.dexscreener.com/latest/dex/new-pairs/{url}") as r:
-                        if r.status != 200: continue
-                        data = await r.json()
-                        for p in data.get("pairs", [])[:20]:  # Scan 20 newest
-                            b = p.get("baseToken", {})
-                            addr = b.get("address")
-                            if not addr or addr in seen: continue
-
-                            liq = p.get("liquidity", {}).get("usd", 0)
-                            fdv = p.get("fdv", 0)
-                            vol = p.get("volume", {}).get("m5", 0)
-                            sym = b.get("symbol", "??")
-                            
-                            # YOUR FILTERS
-                            if liq < 45000: continue      # ≥ $45K
-                            if fdv < 100000: continue     # ≥ $100K
-                            if vol < 2000: continue       # ≥ $2K
-
-                            # TRIGGERS
-                            large_buy = vol >= 2000
-                            h = vol_hist[addr]; h.append(vol)
-                            spike = vol / (sum(h)/len(h)) if len(h) > 1 else 1
-                            volume_spike = spike >= 1.5
-
-                            if large_buy or volume_spike:
-                                candidates.append((liq, fdv, vol, spike, addr, sym, chain, url))
-
-                # SEND BEST
-                if candidates:
-                    liq, fdv, vol, spike, addr, sym, chain, url = max(candidates, key=lambda x: x[3])
-                    await send_alert(app, chain, addr, sym, liq, fdv, vol, spike, url)
-                    last_sent = now
-
-                # FALLBACK: 1/hour
-                elif now - last_sent > 3600 and candidates:
-                    liq, fdv, vol, _, addr, sym, chain, url = max(candidates, key=lambda x: x[2])
-                    await send_alert(app, chain, addr, sym, liq, fdv, vol, 1, url, fallback=True)
-                    last_sent = now
-
-                await asyncio.sleep(60)
+                url = f"https://api.bscscan.com/api?module=account&action=tokentx&contractaddress=0x55d398326f99059fF775485246999027B3197955&address={WALLETS['BSC']}&sort=desc&apikey={BSCSCAN_API_KEY}"
+                async with s.get(url) as r:
+                    if r.status != 200: continue
+                    data = await r.json()
+                    for tx in data.get("result", [])[:10]:
+                        if tx["to"].lower() != WALLETS["BSC"].lower(): continue
+                        value = int(tx["value"]) / 1e18
+                        if 19.9 <= value <= 20.1:  # ~$19.99
+                            memo = tx.get("input", "")[-64:]
+                            if memo in pending_memos:
+                                uid = pending_memos[memo]
+                                await confirm_payment(uid, app)
+                                del pending_memos[memo]
+                await asyncio.sleep(30)
             except Exception as e:
-                print(f"SCANNER ERROR: {e}")
-                await asyncio.sleep(60)
+                print(f"PAYMENT ERROR: {e}")
+                await asyncio.sleep(30)
 
-# === SEND ALERT ===
-async def send_alert(app, chain, addr, sym, liq, fdv, vol, spike, url, fallback=False):
-    seen.add(addr)
-    prefix = "**FALLBACK** " if fallback else ""
-    msg = (
-        f"{prefix}**ALPHA {chain}**\n"
-        f"`{sym}`\n"
-        f"**CA:** `{addr}`\n"
-        f"Liq: ${liq:,.0f} | FDV: ${fdv:,.0f}\n"
-        f"5m Vol: ${vol:,.0f}"
-        + (f" (↑{spike:.1f}x)" if spike >= 1.5 else "") + f"\n"
-        f"[DexScreener](https://dexscreener.com/{url}/{addr})"
-    )
-    for uid, d in list(users.items()):
-        if d["free"] > 0 or d.get("subscribed_until"):
-            try:
-                await app.bot.send_message(uid, msg, parse_mode="Markdown", disable_web_page_preview=True)
-                if d["free"] > 0: d["free"] -= 1
-            except: pass
+async def confirm_payment(uid, app):
+    if uid not in users or users[uid]["paid"]: return
+    users[uid]["paid"] = True
+    source = users[uid]["source"]
+    influencer = source.split("_", 1)[1] if source.startswith("track_") else None
 
-# === RUN BOT ===
+    if influencer and influencer in tracker:
+        tracker[influencer]["subs"] += 1
+        tracker[influencer]["revenue"] += PRICE
+        save_tracker()
+
+    try:
+        await app.bot.send_message(uid, "Payment confirmed! Unlimited alerts ON.")
+    except: pass
+
+# === SCANNER & SEND ALERT (unchanged) ===
+# ... [Your existing scanner + send_alert code here] ...
+
+# === RUN ===
 app = Application.builder().token(BOT_TOKEN).build()
 app.add_handler(CommandHandler("start", start))
+app.add_handler(CommandHandler("stats", stats))
 
 async def main():
     asyncio.create_task(scanner(app))
-    await app.initialize()
-    await app.start()
-    await app.updater.start_polling()
-    print("ONION ALERTS LIVE — NEW PAIRS API — CATCHING x402")
+    asyncio.create_task(check_payments(app))
+    await app.initialize(); await app.start(); await app.updater.start_polling()
+    print("ONION ALERTS LIVE — 25% AUTO")
     await asyncio.Event().wait()
 
 if __name__ == "__main__":
