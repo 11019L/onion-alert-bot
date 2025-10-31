@@ -101,7 +101,7 @@ async def stats(update, ctx):
     )
     # /owner — Owner Dashboard
 async def owner(update, ctx):
-    if update.effective_user.id != YOUR_ADMIN_ID:  # ← REPLACE WITH YOUR TELEGRAM ID
+    if update.effective_user.id !=1319494378:  # ← REPLACE WITH YOUR TELEGRAM ID
         return
 
     total_influencers = len(tracker)
@@ -183,3 +183,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+    app.add_handler(CommandHandler("owner", owner))
