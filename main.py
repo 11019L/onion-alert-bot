@@ -1,4 +1,15 @@
-# main.py - ONION ALERTS + 25% AUTO COMMISSION (NO ADMIN ID)
+import subprocess
+import sys
+
+# INSTALL aiohttp IF MISSING
+try:
+    import aiohttp
+except ImportError:
+    print("Installing aiohttp...")
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "aiohttp==3.9.5"])
+    import aiohttp  # Re-import after install
+    print("aiohttp installed!")
+    # main.py - ONION ALERTS + 25% AUTO COMMISSION (NO ADMIN ID)
 import os, asyncio, logging, json, aiohttp
 from collections import defaultdict, deque
 from telegram.ext import Application, CommandHandler, ContextTypes
