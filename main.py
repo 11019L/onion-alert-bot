@@ -1,4 +1,4 @@
-# main.py - ONION ALERTS: SOL + BSC + RUG PULL PROTECTION
+# main.py - ONION ALERTS: SOL + BSC + NEW FILTERS
 import os, asyncio, logging
 from collections import defaultdict, deque
 from telegram.ext import Application, CommandHandler, ContextTypes
@@ -38,34 +38,7 @@ async def start(update, ctx):
     await ctx.bot.send_message(uid, test, parse_mode="Markdown", disable_web_page_preview=True)
     users[uid]["free"] -= 1
 
-# Rug Pull Check
-async def is_safe_pair(pair, chain, session):
-    try:
-        addr = pair["baseToken"]["address"]
-        liq = pair["liquidity"]["usd"]
-        fdv = pair.get("fdv", 0)
-        if fdv == 0 or liq / fdv < 0.1: return False  # Fake liq
-
-        # Token Info API
-        async with session.get(f"https://api.dexscreener.com/latest/dex/tokens/{addr}") as r:
-            if r.status != 200: return False
-            data = await r.json()
-            token = data["pairs"][0] if data["pairs"] else {}
-
-            # Honeypot & Renounced
-            if token.get("honeypot", False): return False
-            if not token.get("renounced", False): return False
-
-            # Holder Distribution
-            holders = token.get("holderAnalysis", {})
-            top10 = holders.get("top10HoldersPercent", 100)
-            if top10 > 60: return False
-
-            return True
-    except:
-        return False
-
-# Scanner + Rug Check + Fallback
+# Scanner + Your NEW Filters + Fallback
 async def scanner(app):
     import aiohttp
     async with aiohttp.ClientSession() as s:
@@ -88,16 +61,16 @@ async def scanner(app):
                             vol = p.get("volume", {}).get("m5", 0)
                             sym = b.get("symbol", "??")
                             
-                            if not (0 < liq <= 100000 and fdv <= 1000000 and vol >= 300): continue
-
-                            # RUG CHECK
-                            if not await is_safe_pair(p, chain, s): continue
+                            # === YOUR NEW FILTERS ===
+                            if liq < 60000: continue        # Liq ≥ $60K
+                            if fdv < 150000: continue       # FDV ≥ $150K
+                            if vol < 3000: continue         # 5m Vol ≥ $3K
 
                             h = vol_hist[addr]; h.append(vol)
                             spike = vol / (sum(h)/len(h)) if len(h) > 1 else 1
                             candidates.append((liq, fdv, vol, spike, addr, sym, chain, url))
 
-                # SEND BEST ALPHA
+                # SEND BEST
                 if candidates:
                     liq, fdv, vol, spike, addr, sym, chain, url = max(candidates, key=lambda x: x[3] if x[3] >= 1.2 else x[2])
                     await send_alert(app, chain, addr, sym, liq, fdv, vol, spike, url)
@@ -136,7 +109,7 @@ app.add_handler(CommandHandler("start", start))
 async def main():
     asyncio.create_task(scanner(app))
     await app.initialize(); await app.start(); await app.updater.start_polling()
-    print("ONION ALERTS LIVE — RUG-PROTECTED")
+    print("ONION ALERTS LIVE — Liq≥60K | FDV≥150K | Vol≥3K")
     await asyncio.Event().wait()
 
 if __name__ == "__main__":
