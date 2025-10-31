@@ -1,4 +1,4 @@
-# main.py - FIXED: REAL NEW PAIRS API + 1 TEST + 3 REAL
+# main.py - ONION ALERTS: SOLANA + BSC REAL ALPHA
 import os
 import asyncio
 import logging
@@ -13,7 +13,7 @@ if not BOT_TOKEN:
     print("ERROR: Add BOT_TOKEN in Railway Variables!")
     exit()
 
-FREE_ALERTS = 3  # 3 real after test
+FREE_ALERTS = 3  # 3 real alerts after test
 PRICE_USD = 19.99
 YOUR_BSC_WALLET = "0xa11351776d6f483418b73c8e40bc706c93e8b1e1"
 YOUR_SOL_WALLET = "B4427oKJc3xnQf91kwXHX27u1SsVyB8GDQtc3NBxRtkK"
@@ -21,6 +21,7 @@ YOUR_SOL_WALLET = "B4427oKJc3xnQf91kwXHX27u1SsVyB8GDQtc3NBxRtkK"
 
 logging.basicConfig(level=logging.INFO)
 users = {}
+volume_hist = defaultdict(lambda: deque(maxlen=5))
 seen_tokens = set()
 
 # === /start: EXACT FORMAT ===
@@ -63,74 +64,82 @@ async def start(update: ContextTypes.DEFAULT_TYPE, context):
     except Exception as e:
         print(f"TEST SEND ERROR: {e}")
 
-# === FIXED SCANNER: NEW PAIRS API (1-3/HOUR) ===
+# === REAL ALPHA SCANNER: SOLANA + BSC ===
 async def alpha_scanner(app):
     import aiohttp
     async with aiohttp.ClientSession() as session:
         while True:
             try:
-                print("SCANNING NEW PAIRS...")
-                # FIXED API: NEW PAIRS (not search)
+                print("SCANNING SOLANA + BSC FOR ALPHA...")
+                
+                # SOLANA SCAN
                 async with session.get("https://api.dexscreener.com/latest/dex/pairs/solana") as resp:
-                    if resp.status != 200:
-                        print(f"API ERROR: {resp.status}")
-                        await asyncio.sleep(60)
-                        continue
-                    data = await resp.json()
-                    pairs = data.get("pairs", [])
-                    print(f"NEW PAIRS FOUND: {len(pairs)}")
+                    if resp.status == 200:
+                        data = await resp.json()
+                        pairs = data.get("pairs", [])
+                        print(f"SOLANA NEW PAIRS: {len(pairs)}")
+                        await process_pairs(pairs, "SOL", app, session)
 
-                    for pair in pairs[:10]:  # Check latest 10
-                        base = pair.get("baseToken", {})
-                        addr = base.get("address", "")
-                        if not addr or addr in seen_tokens: 
-                            continue
-
-                        liq = pair.get("liquidity", {}).get("usd", 0)
-                        fdv = pair.get("fdv", 0)
-                        vol5m = pair.get("volume", {}).get("m5", 0)
-                        symbol = base.get("symbol", "UNKNOWN")
-
-                        # === LOOSE FILTERS: MORE ALERTS ===
-                        if liq <= 0 or liq > 50000: continue  # < $50K
-                        if fdv > 500000: continue             # < $500K
-                        if vol5m < 500: continue               # Min vol $500
-                        
-                        # 1.5x spike
-                        hist = volume_hist[addr]
-                        hist.append(vol5m)
-                        if len(hist) < 2: continue
-                        avg = sum(hist) / len(hist)
-                        if vol5m < 1.5 * avg: continue
-
-                        # === SEND ===
-                        seen_tokens.add(addr)
-                        msg = (
-                            f"**ALPHA SOL**\n"
-                            f"`{symbol}`\n"
-                            f"**CA:** `{addr}`\n"
-                            f"Liq: ${liq:,.0f} | FDV: ${fdv:,.0f}\n"
-                            f"5m Vol: ${vol5m:,.0f}\n"
-                            f"[DexScreener](https://dexscreener.com/solana/{addr})"
-                        )
-
-                        sent = 0
-                        for uid in list(users.keys()):
-                            data = users[uid]
-                            if data["free_left"] > 0 or data.get("subscribed_until"):
-                                try:
-                                    await app.bot.send_message(uid, msg, parse_mode="Markdown", disable_web_page_preview=True)
-                                    print(f"ALPHA SENT TO {uid}: {symbol}")
-                                    sent += 1
-                                    if data["free_left"] > 0:
-                                        data["free_left"] -= 1
-                                except: pass
-                        print(f"{sent} USERS GOT ALPHA: {symbol}")
+                # BSC SCAN
+                async with session.get("https://api.dexscreener.com/latest/dex/pairs/bsc") as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        pairs = data.get("pairs", [])
+                        print(f"BSC NEW PAIRS: {len(pairs)}")
+                        await process_pairs(pairs, "BSC", app, session)
 
                 await asyncio.sleep(60)
             except Exception as e:
                 print(f"SCANNER ERROR: {e}")
                 await asyncio.sleep(60)
+
+# === PROCESS PAIRS (FILTERS) ===
+async def process_pairs(pairs, chain, app, session):
+    for pair in pairs[:10]:
+        base = pair.get("baseToken", {})
+        addr = base.get("address", "")
+        if not addr or addr in seen_tokens:
+            continue
+
+        liq = pair.get("liquidity", {}).get("usd", 0)
+        fdv = pair.get("fdv", 0)
+        vol5m = pair.get("volume", {}).get("m5", 0)
+        symbol = base.get("symbol", "UNKNOWN")
+
+        # FILTERS
+        if liq <= 0 or liq > 50000: continue
+        if fdv > 500000: continue
+        if vol5m < 500: continue
+        
+        hist = volume_hist[addr]
+        hist.append(vol5m)
+        if len(hist) < 2: continue
+        avg = sum(hist) / len(hist)
+        if vol5m < 1.5 * avg: continue
+
+        seen_tokens.add(addr)
+        msg = (
+            f"**ALPHA {chain}**\n"
+            f"`{symbol}`\n"
+            f"**CA:** `{addr}`\n"
+            f"Liq: ${liq:,.0f} | FDV: ${fdv:,.0f}\n"
+            f"5m Vol: ${vol5m:,.0f} (↑{vol5m/avg:.1f}x)\n"
+            f"[DexScreener](https://dexscreener.com/{chain.lower()}/{addr})"
+        )
+
+        sent = 0
+        for uid in list(users.keys()):
+            data = users[uid]
+            if data["free_left"] > 0 or data.get("subscribed_until"):
+                try:
+                    await app.bot.send_message(uid, msg, parse_mode="Markdown", disable_web_page_preview=True)
+                    print(f"ALPHA {chain} SENT TO {uid}: {symbol}")
+                    sent += 1
+                    if data["free_left"] > 0:
+                        data["free_left"] -= 1
+                except Exception as e:
+                    print(f"SEND ERROR: {e}")
+        print(f"{sent} USERS GOT {chain} ALPHA: {symbol}")
 
 # === START BOT ===
 app = Application.builder().token(BOT_TOKEN).build()
@@ -141,7 +150,7 @@ async def main():
     await app.initialize()
     await app.start()
     await app.updater.start_polling()
-    print("ONION ALERTS LIVE — NEW PAIRS API")
+    print("ONION ALERTS LIVE — SOLANA + BSC")
     await asyncio.Event().wait()
 
 if __name__ == "__main__":
