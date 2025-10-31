@@ -144,7 +144,7 @@ async def scanner(app):
                             vol = p.get("volume", {}).get("m5", 0)
                             sym = b.get("symbol", "??")
                             
-                            if liq < 45000: continue
+                            if liq < 40000: continue
                             if fdv < 100000: continue
                             if vol < 2000: continue
 
