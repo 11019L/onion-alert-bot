@@ -99,6 +99,34 @@ async def stats(update, ctx):
         f"Conversion: `{conv:.1f}%`",
         parse_mode="Markdown"
     )
+    # /owner — Owner Dashboard
+async def owner(update, ctx):
+    if update.effective_user.id != YOUR_ADMIN_ID:  # ← REPLACE WITH YOUR TELEGRAM ID
+        return
+
+    total_influencers = len(tracker)
+    total_joins = sum(t["joins"] for t in tracker.values())
+    total_subs = sum(t["subs"] for t in tracker.values())
+    total_revenue = total_subs * PRICE
+    owner_profit = total_revenue * (1 - COMMISSION_RATE)
+    influencer_payout = total_revenue * COMMISSION_RATE
+
+    # Top influencers
+    top = sorted(tracker.items(), key=lambda x: x[1]["subs"] * PRICE, reverse=True)[:10]
+    top_list = "\n".join([f"{i+1}. {name} → ${stats['subs']*PRICE:.2f} ({stats['subs']} subs)" 
+                         for i, (name, stats) in enumerate(top)])
+
+    await update.message.reply_text(
+        f"**OWNER DASHBOARD**\n\n"
+        f"Total Influencers: `{total_influencers}`\n"
+        f"Total Joins: `{total_joins}`\n"
+        f"Total Subs: `{total_subs}`\n"
+        f"Total Revenue: **${total_revenue:.2f}**\n"
+        f"Your Profit (75%): **${owner_profit:.2f}**\n"
+        f"Influencer Payouts (25%): **${influencer_payout:.2f}**\n\n"
+        f"**TOP INFLUENCERS**\n{top_list or 'None yet'}",
+        parse_mode="Markdown"
+    )
 
 # === AUTO PAYMENT ===
 async def check_payments(app):
