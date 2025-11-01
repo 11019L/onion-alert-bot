@@ -1,4 +1,4 @@
-# main.py - ONION ALERTS: FULLY AUTOMATIC
+# main.py - ONION ALERTS: FULLY AUTOMATIC + NEW LOGIC
 import os, asyncio, logging, json
 import aiohttp
 from collections import defaultdict, deque
@@ -124,55 +124,6 @@ async def owner(update, ctx):
         parse_mode="Markdown"
     )
 
-# Scanner: New Pairs + Filters + Rug Check
-async def scanner(app):
-    async with aiohttp.ClientSession() as s:
-        while True:
-            try:
-                now = asyncio.get_event_loop().time()
-                for chain, url in [("SOL", "solana"), ("BSC", "bsc")]:
-                    async with s.get(f"https://api.dexscreener.com/latest/dex/search/?q={url}") as r:
-                        if r.status != 200: continue
-                        data = await r.json()
-                        for p in data.get("pairs", [])[:50]:
-                            b = p.get("baseToken", {})
-                            addr = b.get("address")
-                            if not addr or addr in seen: continue
-
-                            liq = p.get("liquidity", {}).get("usd", 0)
-                            fdv = p.get("fdv", 0)
-                            vol = p.get("volume", {}).get("m5", 0)
-                            sym = b.get("symbol", "??")
-                            
-                            if liq < 40000: continue
-                            if fdv < 100000: continue
-                            if vol < 2000: continue
-
-                            if not await is_safe(addr, s): continue
-
-                            h = vol_hist[addr]; h.append(vol)
-                            spike = vol / (sum(h)/len(h)) if len(h) > 1 else 1
-                            if vol >= 2000 or spike >= 1.5:
-                                seen.add(addr)
-                                msg = (
-                                    f"**ALPHA {chain}**\n`{sym}`\n**CA:** `{addr}`\n"
-                                    f"Liq: ${liq:,.0f} | FDV: ${fdv:,.0f}\n5m Vol: ${vol:,.0f}"
-                                    + (f" (↑{spike:.1f}x)" if spike >= 1.5 else "") + f"\n"
-                                    f"[DexScreener](https://dexscreener.com/{url}/{addr})"
-                                )
-                                for uid, d in list(users.items()):
-                                    if d["free"] > 0 or d.get("paid", False):
-                                        try:
-                                            await app.bot.send_message(uid, msg, parse_mode="Markdown", disable_web_page_preview=True)
-                                            if d["free"] > 0: d["free"] -= 1
-                                        except: pass
-                                last_sent = now
-                                break
-                await asyncio.sleep(60)
-            except Exception as e:
-                print(f"SCANNER ERROR: {e}")
-                await asyncio.sleep(60)
-
 # Rug Check
 async def is_safe(addr, session):
     try:
@@ -183,6 +134,82 @@ async def is_safe(addr, session):
             return not token.get("honeypot", False) and token.get("renounced", False)
     except:
         return False
+
+# Scanner: NEW LOGIC
+async def scanner(app):
+    async with aiohttp.ClientSession() as s:
+        while True:
+            try:
+                now = asyncio.get_event_loop().time()
+                for chain, url in [("SOL", "solana"), ("BSC", "bsc")]:
+                    async with s.get(f"https://api.dexscreener.com/latest/dex/search/?q={url}") as r:
+                        if r.status != 200: continue
+                        data = await r.json()
+                        for p in data.get("pairs", [])[:100]:
+                            b = p.get("baseToken", {})
+                            addr = b.get("address")
+                            if not addr or addr in seen: continue
+
+                            liq = p.get("liquidity", {}).get("usd", 0)
+                            fdv = p.get("fdv", 0)
+                            vol = p.get("volume", {}).get("m5", 0)
+                            sym = b.get("symbol", "??")
+                            buys = p.get("txns", {}).get("m5", {}).get("buys", 0)
+
+                            # Rug Check First
+                            if not await is_safe(addr, s): continue
+
+                            # Volume Spike
+                            h = vol_hist[addr]; h.append(vol)
+                            spike = vol / (sum(h)/len(h)) if len(h) > 1 else 1
+                            volume_spike = spike >= 1.5
+
+                            # Whale Buy Check
+                            whale_buy = False
+                            try:
+                                async with s.get(f"https://api.dexscreener.com/latest/dex/tokens/{addr}") as tr:
+                                    if tr.status == 200:
+                                        tdata = await tr.json()
+                                        recent_txs = tdata.get("txns", [])[:10]
+                                        whale_buy = any(tx.get("type") == "buy" and tx.get("usd", 0) >= 2000 for tx in recent_txs)
+                            except:
+                                pass
+
+                            # LOGIC: OR Conditions
+                            trigger_liq_fdv = (liq >= 40000 and fdv >= 100000)
+                            trigger_vol = (vol >= 3000)
+                            trigger_spike = volume_spike
+                            trigger_whale = whale_buy
+
+                            if trigger_liq_fdv or trigger_vol or trigger_spike or trigger_whale:
+                                reason = []
+                                if trigger_liq_fdv: reason.append("Liq+FDV")
+                                if trigger_vol: reason.append("Vol≥3K")
+                                if trigger_spike: reason.append(f"Spike {spike:.1f}x")
+                                if trigger_whale: reason.append("Whale Buy")
+                                reason_str = " | ".join(reason)
+
+                                seen.add(addr)
+                                msg = (
+                                    f"**ALPHA {chain}** [{reason_str}]\n"
+                                    f"`{sym}`\n"
+                                    f"**CA:** `{addr}`\n"
+                                    f"Liq: ${liq:,.0f} | FDV: ${fdv:,.0f}\n"
+                                    f"5m Vol: ${vol:,.0f}\n"
+                                    f"[DexScreener](https://dexscreener.com/{url}/{addr})"
+                                )
+                                for uid, d in list(users.items()):
+                                    if d["free"] > 0 or d.get("paid", False):
+                                        try:
+                                            await app.bot.send_message(uid, msg, parse_mode="Markdown", disable_web_page_preview=True)
+                                            if d["free"] > 0: d["free"] -= 1
+                                        except: pass
+                                last_sent = now
+
+                await asyncio.sleep(60)
+            except Exception as e:
+                print(f"SCANNER ERROR: {e}")
+                await asyncio.sleep(60)
 
 # AUTO PAYMENT
 async def check_payments(app):
@@ -230,7 +257,7 @@ async def main():
     asyncio.create_task(scanner(app))
     asyncio.create_task(check_payments(app))
     await app.initialize(); await app.start(); await app.updater.start_polling()
-    print("ONION ALERTS LIVE — FULLY AUTOMATIC")
+    print("ONION ALERTS LIVE — DOCKER + NEW LOGIC")
     await asyncio.Event().wait()
 
 if __name__ == "__main__":
