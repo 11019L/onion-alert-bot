@@ -1,4 +1,4 @@
-# main.py - ONION ALERTS: FULLY AUTOMATIC + NEW LOGIC
+# main.py - ONION ALERTS: FULLY AUTOMATIC + EXACT LOGIC
 import os, asyncio, logging, json
 import aiohttp
 from collections import defaultdict, deque
@@ -11,7 +11,7 @@ if not BOT_TOKEN: exit("ERROR: Add BOT_TOKEN")
 FREE_ALERTS = 3
 PRICE = 19.99
 COMMISSION_RATE = 0.25
-YOUR_ADMIN_ID = 1319494378  # ← CHANGE TO YOUR TELEGRAM ID
+YOUR_ADMIN_ID = 1319494378  # ← YOUR ID
 
 WALLETS = {"BSC": "0xa11351776d6f483418b73c8e40bc706c93e8b1e1", "Solana": "B4427oKJc3xnQf91kwXHX27u1SsVyB8GDQtc3NBxRtkK"}
 
@@ -124,7 +124,7 @@ async def owner(update, ctx):
         parse_mode="Markdown"
     )
 
-# Rug Check
+# Rug Check (Required for all)
 async def is_safe(addr, session):
     try:
         async with session.get(f"https://api.dexscreener.com/latest/dex/tokens/{addr}") as r:
@@ -135,7 +135,7 @@ async def is_safe(addr, session):
     except:
         return False
 
-# Scanner: NEW LOGIC
+# Scanner: EXACT LOGIC
 async def scanner(app):
     async with aiohttp.ClientSession() as s:
         while True:
@@ -154,12 +154,11 @@ async def scanner(app):
                             fdv = p.get("fdv", 0)
                             vol = p.get("volume", {}).get("m5", 0)
                             sym = b.get("symbol", "??")
-                            buys = p.get("txns", {}).get("m5", {}).get("buys", 0)
 
-                            # Rug Check First
+                            # RUG CHECK FIRST
                             if not await is_safe(addr, s): continue
 
-                            # Volume Spike
+                            # Track volume spike
                             h = vol_hist[addr]; h.append(vol)
                             spike = vol / (sum(h)/len(h)) if len(h) > 1 else 1
                             volume_spike = spike >= 1.5
@@ -175,16 +174,14 @@ async def scanner(app):
                             except:
                                 pass
 
-                            # LOGIC: OR Conditions
-                            trigger_liq_fdv = (liq >= 40000 and fdv >= 100000)
-                            trigger_vol = (vol >= 3000)
+                            # TRIGGERS (OR LOGIC)
+                            trigger_base = (liq >= 40000 and fdv >= 100000 and vol >= 3000)
                             trigger_spike = volume_spike
                             trigger_whale = whale_buy
 
-                            if trigger_liq_fdv or trigger_vol or trigger_spike or trigger_whale:
+                            if trigger_base or trigger_spike or trigger_whale:
                                 reason = []
-                                if trigger_liq_fdv: reason.append("Liq+FDV")
-                                if trigger_vol: reason.append("Vol≥3K")
+                                if trigger_base: reason.append("Liq+FDV+Vol≥3K")
                                 if trigger_spike: reason.append(f"Spike {spike:.1f}x")
                                 if trigger_whale: reason.append("Whale Buy")
                                 reason_str = " | ".join(reason)
@@ -257,7 +254,7 @@ async def main():
     asyncio.create_task(scanner(app))
     asyncio.create_task(check_payments(app))
     await app.initialize(); await app.start(); await app.updater.start_polling()
-    print("ONION ALERTS LIVE — DOCKER + NEW LOGIC")
+    print("ONION ALERTS LIVE — EXACT LOGIC")
     await asyncio.Event().wait()
 
 if __name__ == "__main__":
