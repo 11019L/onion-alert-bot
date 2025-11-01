@@ -148,7 +148,7 @@ async def scanner(app):
                     async with s.get(f"https://api.dexscreener.com/latest/dex/new-pairs/{url}") as nr:
                         if nr.status == 200:
                             data = await nr.json()
-                            for p in data.get("pairs", [])[:50]:
+                            for p in data.get("pairs", [])[:100]:
                                 await process_pair(p, chain, s, app)
 
                     # 2. Trending/Old Pairs (Spikes, Whales)
