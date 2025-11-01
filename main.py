@@ -175,7 +175,7 @@ async def scanner(app):
                                 pass
 
                             # TRIGGERS (OR LOGIC)
-                            trigger_base = (liq >= 40000 and fdv >= 100000 and vol >= 3000)
+                            trigger_base = (liq >= 30000 and fdv >= 70000 and vol >= 3000)
                             trigger_spike = volume_spike
                             trigger_whale = whale_buy
 
