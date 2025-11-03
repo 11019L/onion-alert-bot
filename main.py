@@ -55,7 +55,7 @@ def load_data():
                     "seen": seen,
                     "last_alerted": last_alerted,
                     "vol_hist": vol_hist,
-                    "pending_payments": raw.get("pending_payments", {}),  # txid -> uid
+                    "pending_payments": raw.get("pending_payments", {}),
                 }
         except Exception as e:
             logger.error(f"Failed to load data: {e}")
@@ -86,7 +86,7 @@ def save_data(state):
 state = load_data()
 tracker = state["tracker"]
 users = state["users"]
-seen = state["seen"]  # list of (addr, ts)
+seen = state["seen"]                     # list of (addr, ts)
 seen_set = {a.lower() for a, _ in seen}
 last_alerted = state["last_alerted"]
 vol_hist = state["vol_hist"]
@@ -188,7 +188,6 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN_V2, disable_web_page_preview=True)
 
-    # Test alert only if free > 0
     if users[uid]["free"] > 0:
         test = (
             f"*TEST ALPHA SOL*\n"
@@ -339,7 +338,7 @@ async def scanner(app: Application):
                     addr_lower = addr.lower()
                     if addr_lower in seen_set:
                         continue
-                    addr_to_pair[addr_lower] = (p, chain, slug, src, pair_addr, addr)  # keep original case
+                    addr_to_pair[addr_lower] = (p, chain, slug, src, pair_addr, addr)
 
                 addrs_lower = list(addr_to_pair.keys())
                 if not addrs_lower:
@@ -352,7 +351,7 @@ async def scanner(app: Application):
                     addrs_in_chain = [a for a in addrs_lower if addr_to_pair[a][1] == chain]
                     if addrs_in_chain:
                         chain_safety = await is_safe_batch(
-                            [addr_to_pair[a][5] for a in addrs_in_chain],  # original case
+                            [addr_to_pair[a][5] for a in addrs_in_chain],
                             chain, session
                         )
                         safety.update(chain_safety)
@@ -423,7 +422,43 @@ async def scanner(app: Application):
                                 sent_total += 1
                                 if sent % 20 == 0:
                                     await asyncio.sleep(1)
-                                                        except Exception as e:
+                            except Exception as e:                     # ← FIXED INDENTATION
                                 if "Flood" in str(e):
                                     await asyncio.sleep(5)
                                 logger.warning(f"Send failed to {uid}: {e}")
+                    logger.info(f"ALERT → {sym} | {reason_str} | {sent} users")
+
+                # Prune vol_hist
+                for addr in list(vol_hist.keys()):
+                    if addr not in addr_to_pair:
+                        del vol_hist[addr]
+
+                await asyncio.sleep(60)
+
+            except Exception as e:
+                logger.error(f"SCANNER CRASH: {e}")
+                await asyncio.sleep(60)
+
+# === MAIN ===
+def main():
+    app = Application.builder().token(BOT_TOKEN).build()
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("pay", pay))
+    app.add_handler(CommandHandler("approve", approve))
+    app.add_handler(CommandHandler("stats", stats))
+    app.add_handler(CommandHandler("owner", owner))
+
+    loop = asyncio.get_event_loop()
+    loop.create_task(scanner(app))
+    loop.create_task(auto_save())
+
+    logger.info("ONION ALERTS LIVE — SENDING CA FROM DEXSCREENER")
+    app.run_polling(drop_pending_updates=True)
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        save_data(state)
+        logger.info("Shutdown complete.")
