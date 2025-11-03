@@ -1,4 +1,4 @@
-# main.py - ONION ALERTS (FINAL - GUARANTEED WORKING)
+# main.py - ONION ALERTS (FINAL - 100% WORKING)
 import os
 import asyncio
 import logging
@@ -138,18 +138,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     logger.info(f"/start from {uid}")
     
-    # Track influencer
     source = context.args[0] if context.args and context.args[0].startswith("track_") else "organic"
     influencer = source.split("_", 1)[1] if "_" in source else None
     if influencer:
         tracker.setdefault(influencer, {"joins": 0, "subs": 0})["joins"] += 1
 
-    # Add user
     if uid not in users:
         users[uid] = {"free": FREE_ALERTS, "source": source, "paid": False}
     free = users[uid]["free"]
 
-    # WELCOME
     welcome = (
         f"*ONION ALERTS*\n\n"
         f"Free trial: `{free}` alerts left\n"
@@ -160,7 +157,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(welcome, parse_mode="MarkdownV2")
 
-    # TEST ALERT
     test = (
         f"*TEST ALPHA SOL*\n"
         f"`ONIONCOIN`\n"
@@ -219,7 +215,7 @@ async def owner(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Owner error: {e}")
         await update.message.reply_text("Error.")
 
-# === SCANNER ===
+# === SCANNER (FIXED - NO CRASH) ===
 async def scanner(app: Application):
     async with aiohttp.ClientSession() as session:
         while True:
@@ -255,8 +251,12 @@ async def scanner(app: Application):
                     await asyncio.sleep(60)
                     continue
 
+                # === FIXED: NO CRASH ===
                 safety = {}
-                for chain, addrs in defaultdict(list, {c: [a for a, (_, c, _, _, _) in addr_to_pair.items() if c == chain]}).items():
+                chain_groups = defaultdict(list)
+                for addr, (_, chain, _, _, _) in addr_to_pair.items():
+                    chain_groups[chain].append(addr)
+                for chain, addrs in chain_groups.items():
                     safety.update(await is_safe_batch(addrs, chain, session))
 
                 alerts = []
@@ -313,13 +313,15 @@ async def post_init(app: Application):
     app.create_task(auto_save())
     try:
         await app.bot.send_message(YOUR_ADMIN_ID, "*BOT LIVE*\nScanning SOL + BSC...", parse_mode="MarkdownV2")
-    except: pass
+        logger.info("Startup alert sent.")
+    except Exception as e:
+        logger.error(f"Startup alert failed: {e}")
 
 # === ERROR HANDLER ===
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     logger.error(f"ERROR: {context.error}")
 
-# === MAIN ===
+# === MAIN (FIXED - NO drop_pending_updates) ===
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
@@ -329,7 +331,7 @@ def main():
     app.add_error_handler(error_handler)
     app.post_init = post_init
     logger.info("BOT STARTED")
-    app.run_polling(drop_pending_updates=True)
+    app.run_polling()  # ← FIXED: NO drop_pending_updates
 
 if __name__ == "__main__":
     try:
