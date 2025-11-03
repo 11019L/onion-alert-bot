@@ -1,26 +1,42 @@
 # main.py - ONION ALERTS (FIXED & WORKING)
-import os, asyncio, logging, json, time
+import os
+import asyncio
+import logging
+import json
+import time
 from collections import defaultdict, deque
 from datetime import datetime
 import aiohttp
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
-from telegram.helpers import escape_markdown# === CONFIG ===
+from telegram.helpers import escape_markdown
+
+# === CONFIG ===
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
     exit("ERROR: Add BOT_TOKEN")
+
 FREE_ALERTS = 3
 PRICE = 19.99
 COMMISSION_RATE = 0.25
 YOUR_ADMIN_ID = int(os.getenv("ADMIN_ID", "1319494378"))
-WALLETS = {"BSC": "0xa11351776d6f483418b73c8e40bc706c93e8b1e1"}# APIs
+
+WALLETS = {"BSC": "0xa11351776d6f483418b73c8e40bc706c93e8b1e1"}
+
+# APIs
 GOPLUS_API = "https://api.gopluslabs.io/api/v1/token_security/{chain_id}?contract_addresses={addrs}"
 NEW_PAIRS_URL = "https://api.dexscreener.com/latest/dex/new-pairs/{chain}"
-SEARCH_URL = "https://api.dexscreener.com/latest/dex/search?q={chain}"# === LOGGING ===
+SEARCH_URL = "https://api.dexscreener.com/latest/dex/search?q={chain}"
+
+# === LOGGING ===
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("onion-alerts")# === PERSISTENT DATA ===
+logger = logging.getLogger("onion-alerts")
+
+# === PERSISTENT DATA ===
 DATA_FILE = "data.json"
-SAVE_INTERVAL = 30  # secondsdef load_data():
+SAVE_INTERVAL = 30  # seconds
+
+def load_data():
     if os.path.exists(DATA_FILE):
         try:
             with open(DATA_FILE, "r") as f:
@@ -36,8 +52,7 @@ SAVE_INTERVAL = 30  # secondsdef load_data():
                 }
         except Exception as e:
             logger.error(f"Failed to load data: {e}")
-    return {"tracker": {}, "users": {}, "seen": {}, "last_alerted": {}}def save_data(data):
-    tmp = {
+    return {"tracker": {}, "users": {}, "seen": {}, "last_alerted": {}}
         "tracker": tracker,
         "users": users,
         "seen": seen,
