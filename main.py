@@ -9,7 +9,6 @@ from telegram.helpers import escape_markdown# === CONFIG ===
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
     exit("ERROR: Add BOT_TOKEN")
-
 FREE_ALERTS = 3
 PRICE = 19.99
 COMMISSION_RATE = 0.25
