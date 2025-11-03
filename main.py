@@ -423,7 +423,7 @@ async def scanner(app: Application):
                                 sent_total += 1
                                 if sent % 20 == 0:
                                     await asyncio.sleep(1)
-                            except Exception as e:
+                                                        except Exception as e:
                                 if "Flood" in str(e):
                                     await asyncio.sleep(5)
-                                logger.warning(f"Send failed to {uid}:
+                                logger.warning(f"Send failed to {uid}: {e}")
