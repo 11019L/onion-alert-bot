@@ -1,4 +1,4 @@
-# main.py - ONION ALERTS (100% FIXED & WORKING)
+# main.py - ONION ALERTS (FINAL FIXED & WORKING)
 import os
 import asyncio
 import logging
@@ -6,6 +6,7 @@ import json
 import time
 import copy
 from collections import defaultdict, deque
+from datetime import datetime
 import aiohttp
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
@@ -36,6 +37,15 @@ logger = logging.getLogger("onion-alerts")
 DATA_FILE = "data.json"
 SAVE_INTERVAL = 30
 
+# Initialize empty
+tracker = {}
+users = {}
+seen = {}
+last_alerted = {}
+vol_hist = defaultdict(lambda: deque(maxlen=5))
+goplus_cache = {}
+save_lock = asyncio.Lock()
+
 def load_data():
     if os.path.exists(DATA_FILE):
         try:
@@ -54,14 +64,11 @@ def load_data():
             logger.error(f"Failed to load data: {e}")
     return {"tracker": {}, "users": {}, "seen": {}, "last_alerted": {}}
 
-data = load_data()
-tracker = data["tracker"]
-users = data["users"]
-seen = data["seen"]
-last_alerted = data["last_alerted"]
-vol_hist = defaultdict(lambda: deque(maxlen=5))
-goplus_cache = {}
-save_lock = asyncio.Lock()
+loaded = load_data()
+tracker.update(loaded["tracker"])
+users.update(loaded["users"])
+seen.update(loaded["seen"])
+last_alerted.update(loaded["last_alerted"])
 
 # === AUTO-SAVE ===
 async def auto_save():
@@ -86,14 +93,11 @@ def get_dex_url(chain: str, pair_addr: str) -> str:
     chain_slug = "solana" if chain == "SOL" else "bsc"
     return f"https://dexscreener.com/{chain_slug}/{pair_addr}"
 
-def safe_md(text):
-    return escape_markdown(str(text), version=2)
-
 def format_alert(chain, sym, addr, liq, fdv, vol, pair_addr, reason):
     return (
-        f"*ALPHA {safe_md(chain)}* — {safe_md(reason)}\n"
-        f"`{safe_md(sym)}`\n"
-        f"*CA:* `{safe_md(addr)}`\n"
+        f"*ALPHA {escape_markdown(chain, version=2)}* — {escape_markdown(reason, version=2)}\n"
+        f"`{escape_markdown(sym, version=2)}`\n"
+        f"*CA:* `{escape_markdown(addr, version=2)}`\n"
         f"Liq: ${liq:,.0f} | FDV: ${fdv:,.0f}\n"
         f"5m Vol: ${vol:,.0f}\n"
         f"[DexScreener]({get_dex_url(chain, pair_addr)})"
@@ -153,7 +157,7 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         users[uid] = {"free": FREE_ALERTS, "source": source, "paid": False}
     free = users[uid]["free"]
 
-    msg = (
+    welcome = (
         f"*ONION ALERTS*\n\n"
         f"Free trial: `{free}` alerts left\n"
         f"Subscribe: `${PRICE}/mo`\n\n"
@@ -161,7 +165,7 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"After payment, send TXID:\n`/pay YOUR_TXID_HERE`\n\n"
         f"_Auto-upgrade in <2 min!_"
     )
-    await update.message.reply_text(msg, parse_mode="MarkdownV2")
+    await update.message.reply_text(welcome, parse_mode="MarkdownV2")
 
     test = (
         f"*TEST ALPHA SOL*\n"
@@ -170,12 +174,13 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"Liq: $9,200 | FDV: $52,000\n"
         f"5m Vol: $15,600\n"
         f"[DexScreener](https://dexscreener.com/solana/onion123456789abcdefghi123456789abcdefghi)\n\n"
-        f"_Test alert — real ones coming soon!_"
+        f"_Test alert — real ones coming!_"
     )
-    await ctx.bot.send_message(uid, test, parse_mode="MarkdownV2", disable_web_page_preview=True)
+    await update.message.reply_text(test, parse_mode="MarkdownV2", disable_web_page_preview=True)
+    logger.info(f"Start command used by {uid}")
 
 async def pay(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Payment processing is currently manual. Contact admin.")
+    await update.message.reply_text("Payment processing is manual. Contact admin.")
 
 async def stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not ctx.args:
@@ -201,27 +206,37 @@ async def stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
 
 async def owner(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != YOUR_ADMIN_ID:
+    uid = update.effective_user.id
+    logger.info(f"/owner called by {uid}")
+    if uid != YOUR_ADMIN_ID:
+        logger.warning(f"Unauthorized /owner from {uid}")
         return
-    total_influencers = len(tracker)
-    total_joins = sum(t["joins"] for t in tracker.values())
-    total_subs = sum(t["subs"] for t in tracker.values())
-    total_revenue = total_subs * PRICE
-    owner_profit = total_revenue * (1 - COMMISSION_RATE)
-    top = sorted(tracker.items(), key=lambda x: x[1]["subs"] * PRICE, reverse=True)[:10]
-    top_list = "\n".join(
-        [f"{i+1}. {safe_md(name)} → ${stats['subs']*PRICE:.2f} ({stats['subs']} subs)" for i, (name, stats) in enumerate(top)]
-    )
-    msg = (
-        f"*OWNER DASHBOARD*\n\n"
-        f"Influencers: `{total_influencers}`\n"
-        f"Joins: `{total_joins}`\n"
-        f"Subs: `{total_subs}`\n"
-        f"Revenue: *${total_revenue:.2f}*\n"
-        f"Your Profit: *${owner_profit:.2f}*\n\n"
-        f"*TOP INFLUENCERS*\n{top_list or 'None'}"
-    )
-    await update.message.reply_text(msg, parse_mode="MarkdownV2")
+    
+    try:
+        total_influencers = len(tracker)
+        total_joins = sum(t.get("joins", 0) for t in tracker.values())
+        total_subs = sum(t.get("subs", 0) for t in tracker.values())
+        total_revenue = total_subs * PRICE
+        owner_profit = total_revenue * (1 - COMMISSION_RATE)
+        top = sorted(tracker.items(), key=lambda x: x[1].get("subs", 0) * PRICE, reverse=True)[:10]
+        top_list = "\n".join(
+            [f"{i+1}. {escape_markdown(name, version=2)} → ${stats.get('subs', 0)*PRICE:.2f} ({stats.get('subs', 0)} subs)" 
+             for i, (name, stats) in enumerate(top)]
+        )
+        msg = (
+            f"*OWNER DASHBOARD*\n\n"
+            f"Influencers: `{total_influencers}`\n"
+            f"Joins: `{total_joins}`\n"
+            f"Subs: `{total_subs}`\n"
+            f"Revenue: *${total_revenue:.2f}*\n"
+            f"Your Profit: *${owner_profit:.2f}*\n\n"
+            f"*TOP INFLUENCERS*\n{top_list or 'None'}"
+        )
+        await update.message.reply_text(msg, parse_mode="MarkdownV2")
+        logger.info("Owner dashboard sent")
+    except Exception as e:
+        logger.error(f"Owner error: {e}")
+        await update.message.reply_text("Dashboard error.")
 
 # === SCANNER ===
 async def scanner(app: Application):
@@ -280,7 +295,7 @@ async def scanner(app: Application):
                     if not safety.get(addr, False):
                         continue
                     base = p.get("baseToken", {})
-                    sym = base.get("symbol", "???")[:20]
+                    sym = base.get("symbol", "???")[:100]
                     liq = p.get("liquidity", {}).get("usd", 0) or 0
                     fdv = p.get("fdv", 0) or 0
                     vol = p.get("volume", {}).get("m5", 0) or 0
@@ -295,12 +310,17 @@ async def scanner(app: Application):
                     volume_spike = spike >= 1.5
 
                     reason = []
+                    # === 1. NEW PAIRS ===
                     if src == "new" and liq >= 500 and fdv >= 3000 and vol >= 200:
                         reason.append("New Pair")
+
+                    # === 2. MEDIUM PAIRS ===
                     if liq >= 5000 and fdv >= 10000 and vol >= 1000:
                         reason.append("Medium")
+
+                    # === 3. HIGH SPIKE ===
                     if volume_spike:
-                        reason.append(f"Spike {spike:.1f}x")
+                        reason.append(f"High Spike {spike:.1f}x")
 
                     if not reason:
                         continue
@@ -318,10 +338,11 @@ async def scanner(app: Application):
                     async with save_lock:
                         target_users = list(users.items())
                     for uid, u in target_users:
-                        if u["free"] > 0 or u.get("paid"):
+                        # ADMIN GETS ALL
+                        if uid == YOUR_ADMIN_ID or u["free"] > 0 or u.get("paid"):
                             try:
                                 await app.bot.send_message(uid, msg, parse_mode="MarkdownV2", disable_web_page_preview=True)
-                                if u["free"] > 0:
+                                if u["free"] > 0 and uid != YOUR_ADMIN_ID:
                                     async with save_lock:
                                         users[uid]["free"] -= 1
                                 async with save_lock:
@@ -330,10 +351,7 @@ async def scanner(app: Application):
                                 if sent % 20 == 0:
                                     await asyncio.sleep(1)
                             except Exception as e:
-                                if "Flood control" in str(e):
-                                    await asyncio.sleep(5)
-                                else:
-                                    logger.warning(f"Send failed to {uid}: {e}")
+                                logger.warning(f"Send failed to {uid}: {e}")
                     logger.info(f"ALERT → {addr} | Sent to {sent} users")
 
                 await asyncio.sleep(60)
@@ -342,19 +360,32 @@ async def scanner(app: Application):
                 logger.error(f"SCANNER CRASH: {e}")
                 await asyncio.sleep(60)
 
-# === BACKGROUND TASK STARTER ===
+# === POST INIT ===
 async def post_init(app: Application):
     app.create_task(scanner(app))
     app.create_task(auto_save())
     logger.info("Background tasks started.")
 
+    startup = f"*ONION ALERTS LIVE*\n\nScanning SOL + BSC...\nTime: {datetime.now().strftime('%H:%M:%S')}"
+    try:
+        await app.bot.send_message(YOUR_ADMIN_ID, startup, parse_mode="MarkdownV2")
+        logger.info("Startup alert sent to admin.")
+    except Exception as e:
+        logger.error(f"Startup alert failed: {e}")
+
+# === ERROR HANDLER ===
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
+    logger.error(f"Error: {context.error}", exc_info=context.error)
+
 # === MAIN ===
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
+    
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("pay", pay))
     app.add_handler(CommandHandler("stats", stats))
     app.add_handler(CommandHandler("owner", owner))
+    app.add_error_handler(error_handler)
 
     app.post_init = post_init
 
