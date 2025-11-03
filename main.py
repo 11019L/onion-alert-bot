@@ -8,7 +8,9 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 from telegram.helpers import escape_markdown# === CONFIG ===
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
-    exit("ERROR: Add BOT_TOKEN")FREE_ALERTS = 3
+    exit("ERROR: Add BOT_TOKEN")
+
+FREE_ALERTS = 3
 PRICE = 19.99
 COMMISSION_RATE = 0.25
 YOUR_ADMIN_ID = int(os.getenv("ADMIN_ID", "1319494378"))WALLETS = {"BSC": "0xa11351776d6f483418b73c8e40bc706c93e8b1e1"}# APIs
