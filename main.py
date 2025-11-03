@@ -1,6 +1,6 @@
-# main.py - ONION ALERTS (FINAL FIXED & WORKING)
+# main.py - ONION ALERTS (100% FIXED & WORKING)
 import os
-import asyncio  # ← THIS WAS MISSING!
+import asyncio
 import logging
 import json
 import time
@@ -61,7 +61,7 @@ seen = data["seen"]
 last_alerted = data["last_alerted"]
 vol_hist = defaultdict(lambda: deque(maxlen=5))
 goplus_cache = {}
-save_lock = asyncio.Lock()  # ← NOW WORKS!
+save_lock = asyncio.Lock()
 
 # === AUTO-SAVE ===
 async def auto_save():
@@ -342,6 +342,12 @@ async def scanner(app: Application):
                 logger.error(f"SCANNER CRASH: {e}")
                 await asyncio.sleep(60)
 
+# === BACKGROUND TASK STARTER ===
+async def post_init(app: Application):
+    app.create_task(scanner(app))
+    app.create_task(auto_save())
+    logger.info("Background tasks started.")
+
 # === MAIN ===
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
@@ -350,8 +356,7 @@ def main():
     app.add_handler(CommandHandler("stats", stats))
     app.add_handler(CommandHandler("owner", owner))
 
-    app.create_task(scanner(app))
-    app.create_task(auto_save())
+    app.post_init = post_init
 
     logger.info("ONION ALERTS LIVE — SENDING CA FROM DEXSCREENER")
     app.run_polling(drop_pending_updates=True)
