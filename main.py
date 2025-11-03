@@ -367,12 +367,17 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        async with save_lock:
+        # Run a sync save using asyncio.run() or just use sync file write
+        save_dict = {
+            "tracker": copy.deepcopy(tracker),
+            "users": {k: v for k, v in users.items()},
+            "seen": {k: v for k, v in seen.items() if time.time() - v < 86400},
+            "last_alerted": {k: v for k, v in last_alerted.items() if time.time() - v < 3600}
+        }
+        try:
             with open(DATA_FILE, "w") as f:
-                json.dump({
-                    "tracker": tracker,
-                    "users": users,
-                    "seen": seen,
-                    "last_alerted": last_alerted
-                }, f, indent=2)
+                json.dump(save_dict, f, indent=2)
+            logger.info("Data saved on shutdown.")
+        except Exception as e:
+            logger.error(f"Failed to save on shutdown: {e}")
         logger.info("Shutdown complete.")
