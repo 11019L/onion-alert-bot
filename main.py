@@ -1,12 +1,10 @@
-# main.py - ONION ALERTS (FULLY FIXED & WORKING)
+# main.py - ONION ALERTS (FINAL FIXED & WORKING)
 import os
-import asyncio
 import logging
 import json
 import time
 import copy
 from collections import defaultdict, deque
-from datetime import datetime
 import aiohttp
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
@@ -35,7 +33,7 @@ logger = logging.getLogger("onion-alerts")
 
 # === PERSISTENT DATA ===
 DATA_FILE = "data.json"
-SAVE_INTERVAL = 30  # seconds
+SAVE_INTERVAL = 30
 
 def load_data():
     if os.path.exists(DATA_FILE):
@@ -55,7 +53,6 @@ def load_data():
             logger.error(f"Failed to load data: {e}")
     return {"tracker": {}, "users": {}, "seen": {}, "last_alerted": {}}
 
-# Load initial data
 data = load_data()
 tracker = data["tracker"]
 users = data["users"]
@@ -65,7 +62,7 @@ vol_hist = defaultdict(lambda: deque(maxlen=5))
 goplus_cache = {}
 save_lock = asyncio.Lock()
 
-# === AUTO-SAVE (Safe deepcopy + lock) ===
+# === AUTO-SAVE ===
 async def auto_save():
     while True:
         await asyncio.sleep(SAVE_INTERVAL)
@@ -233,7 +230,6 @@ async def scanner(app: Application):
                 now = time.time()
                 candidates = []
 
-                # --- Fetch new pairs + trending ---
                 for chain, slug in [("SOL", "solana"), ("BSC", "bsc")]:
                     try:
                         async with session.get(NEW_PAIRS_URL.format(chain=slug), timeout=10) as r:
@@ -257,7 +253,6 @@ async def scanner(app: Application):
                     await asyncio.sleep(60)
                     continue
 
-                # --- Extract ---
                 addr_to_pair = {}
                 for p, chain, slug, src in candidates:
                     base = p.get("baseToken", {})
@@ -271,7 +266,6 @@ async def scanner(app: Application):
                     await asyncio.sleep(60)
                     continue
 
-                # --- Check per-chain safely ---
                 safety = {}
                 chain_groups = defaultdict(list)
                 for addr, (_, chain, _, _, _) in addr_to_pair.items():
@@ -293,7 +287,6 @@ async def scanner(app: Application):
                     if addr in last_alerted and now - last_alerted[addr] < 300:
                         continue
 
-                    # === Volume spike using PREVIOUS average ===
                     h = vol_hist[addr]
                     prev_avg = sum(h) / len(h) if h else 0
                     spike = vol / prev_avg if prev_avg > 0 else 1.0
@@ -315,7 +308,6 @@ async def scanner(app: Application):
                     msg = format_alert(chain, sym, addr, liq, fdv, vol, pair_addr, " | ".join(reason))
                     alerts.append((msg, addr))
 
-                # --- Send alerts (Flood control) ---
                 if not alerts:
                     await asyncio.sleep(60)
                     continue
@@ -350,7 +342,7 @@ async def scanner(app: Application):
                 await asyncio.sleep(60)
 
 # === MAIN ===
-async def main():
+def main():
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("pay", pay))
@@ -361,9 +353,9 @@ async def main():
     app.create_task(auto_save())
 
     logger.info("ONION ALERTS LIVE — SENDING CA FROM DEXSCREENER")
-    await app.run_polling(drop_pending_updates=True)  # Now inside async main()
+    app.run_polling(drop_pending_updates=True)
 
-# === SHUTDOWN SAVE (SYNC) ===
+# === SHUTDOWN SAVE ===
 def save_on_exit():
     save_dict = {
         "tracker": copy.deepcopy(tracker),
@@ -380,7 +372,7 @@ def save_on_exit():
 
 if __name__ == "__main__":
     try:
-        asyncio.run(main())
+        main()
     except KeyboardInterrupt:
         save_on_exit()
         logger.info("Bot stopped.")
