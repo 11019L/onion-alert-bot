@@ -1,4 +1,4 @@
-# main.py - ONION ALERTS (FIXED & WORKING)
+# main.py - ONION ALERTS (FULLY FIXED & WORKING)
 import os
 import asyncio
 import logging
@@ -65,7 +65,7 @@ vol_hist = defaultdict(lambda: deque(maxlen=5))
 goplus_cache = {}
 save_lock = asyncio.Lock()
 
-# === AUTO-SAVE (FIX #1: Safe deepcopy + lock) ===
+# === AUTO-SAVE (Safe deepcopy + lock) ===
 async def auto_save():
     while True:
         await asyncio.sleep(SAVE_INTERVAL)
@@ -293,7 +293,7 @@ async def scanner(app: Application):
                     if addr in last_alerted and now - last_alerted[addr] < 300:
                         continue
 
-                    # === FIX #4: Volume spike using PREVIOUS average ===
+                    # === Volume spike using PREVIOUS average ===
                     h = vol_hist[addr]
                     prev_avg = sum(h) / len(h) if h else 0
                     spike = vol / prev_avg if prev_avg > 0 else 1.0
@@ -315,14 +315,14 @@ async def scanner(app: Application):
                     msg = format_alert(chain, sym, addr, liq, fdv, vol, pair_addr, " | ".join(reason))
                     alerts.append((msg, addr))
 
-                # --- Send alerts (FIX #3: Flood control) ---
+                # --- Send alerts (Flood control) ---
                 if not alerts:
                     await asyncio.sleep(60)
                     continue
 
                 for msg, addr in alerts:
                     sent = 0
-                    async with save_lock:  # Prevent race during send
+                    async with save_lock:
                         target_users = list(users.items())
                     for uid, u in target_users:
                         if u["free"] > 0 or u.get("paid"):
@@ -335,7 +335,7 @@ async def scanner(app: Application):
                                     seen[addr] = time.time()
                                 sent += 1
                                 if sent % 20 == 0:
-                                    await asyncio.sleep(1)  # Telegram: 20 msg/sec
+                                    await asyncio.sleep(1)
                             except Exception as e:
                                 if "Flood control" in str(e):
                                     await asyncio.sleep(5)
@@ -361,23 +361,26 @@ async def main():
     app.create_task(auto_save())
 
     logger.info("ONION ALERTS LIVE — SENDING CA FROM DEXSCREENER")
-    await app.run_polling(drop_pending_updates=True)
+    await app.run_polling(drop_pending_updates=True)  # Now inside async main()
+
+# === SHUTDOWN SAVE (SYNC) ===
+def save_on_exit():
+    save_dict = {
+        "tracker": copy.deepcopy(tracker),
+        "users": {k: v for k, v in users.items()},
+        "seen": {k: v for k, v in seen.items() if time.time() - v < 86400},
+        "last_alerted": {k: v for k, v in last_alerted.items() if time.time() - v < 3600}
+    }
+    try:
+        with open(DATA_FILE, "w") as f:
+            json.dump(save_dict, f, indent=2)
+        logger.info("Data saved on shutdown.")
+    except Exception as e:
+        logger.error(f"Shutdown save failed: {e}")
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        # Run a sync save using asyncio.run() or just use sync file write
-        save_dict = {
-            "tracker": copy.deepcopy(tracker),
-            "users": {k: v for k, v in users.items()},
-            "seen": {k: v for k, v in seen.items() if time.time() - v < 86400},
-            "last_alerted": {k: v for k, v in last_alerted.items() if time.time() - v < 3600}
-        }
-        try:
-            with open(DATA_FILE, "w") as f:
-                json.dump(save_dict, f, indent=2)
-            logger.info("Data saved on shutdown.")
-        except Exception as e:
-            logger.error(f"Failed to save on shutdown: {e}")
-        logger.info("Shutdown complete.")
+        save_on_exit()
+        logger.info("Bot stopped.")
