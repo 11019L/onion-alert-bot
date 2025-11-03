@@ -1,5 +1,6 @@
 # main.py - ONION ALERTS (FINAL FIXED & WORKING)
 import os
+import asyncio  # ← THIS WAS MISSING!
 import logging
 import json
 import time
@@ -60,7 +61,7 @@ seen = data["seen"]
 last_alerted = data["last_alerted"]
 vol_hist = defaultdict(lambda: deque(maxlen=5))
 goplus_cache = {}
-save_lock = asyncio.Lock()
+save_lock = asyncio.Lock()  # ← NOW WORKS!
 
 # === AUTO-SAVE ===
 async def auto_save():
