@@ -62,6 +62,7 @@ def load_data():
             users_raw = raw.get("users", {})
             for u in users_raw.values():
                 u.setdefault("test_sent", False)
+                u.setdefault("chat_id", None)  # NEW: Track chat
                 u.setdefault("filters", {
                     "levels": ["min", "medium", "max"],
                     "chains": ["SOL", "BSC", "PUMP"],
@@ -224,7 +225,8 @@ def build_settings_kb(f):
 # --------------------------------------------------------------------------- #
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
-    log.info(f"START from {uid}")
+    chat_id = update.effective_chat.id
+    log.info(f"START from {uid} in chat {chat_id}")
 
     args = ctx.args or []
     source = args[0] if args and args[0].startswith("track_") else "organic"
@@ -239,11 +241,14 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "paid": False,
             "paid_until": None,
             "test_sent": False,
+            "chat_id": chat_id,  # SAVE CHAT ID
             "filters": {"levels": ["min", "medium", "max"], "chains": ["SOL", "BSC", "PUMP"], "premium_only": False}
         }
 
     user = users[uid]
+    user["chat_id"] = chat_id  # UPDATE CHAT ID
 
+    # WELCOME (in chat)
     welcome_html = (
         f"<b>ONION ALERTS</b>\n\n"
         f"Free trial: <code>{user['free']}</code> alerts left\n"
@@ -254,6 +259,7 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(welcome_html, parse_mode="HTML")
 
+    # TEST ALERT (in same chat)
     if not user.get("test_sent", False):
         test = (
             f"*TEST ALERT \\(PUMP\\)*\n"
@@ -264,12 +270,9 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"[Pump\\.fun](https://pump\\.fun/test123456789abcdefghi123456789abcdefghi)\n\n"
             f"_This test does **not** use a free trial_"
         )
-        try:
-            await ctx.bot.send_message(uid, test, parse_mode="MarkdownV2", disable_web_page_preview=True)
-            user["test_sent"] = True
-            log.info(f"Test DM sent to {uid}")
-        except Exception as e:
-            log.warning(f"Test DM failed: {e}")
+        await update.message.reply_text(test, parse_mode="MarkdownV2", disable_web_page_preview=True)
+        user["test_sent"] = True
+        log.info(f"Test alert sent in chat {chat_id}")
 
 async def testalert(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
@@ -282,14 +285,13 @@ async def testalert(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"5m Vol: $450\n"
         f"[Pump\\.fun](https://pump\\.fun/fake1234567890)"
     )
-    await ctx.bot.send_message(update.effective_user.id, msg, parse_mode="MarkdownV2")
-    await update.message.reply_text("Fake alert sent!")
+    await update.message.reply_text(msg, parse_mode="MarkdownV2")
+    await update.message.reply_text("Fake alert sent in chat!")
 
 async def force(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
-    await ctx.bot.send_message(update.effective_user.id, "FORCE: BOT IS ALIVE")
-    await update.message.reply_text("Force sent!")
+    await update.message.reply_text("FORCE: BOT IS ALIVE IN THIS CHAT")
 
 async def pay(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not ctx.args:
@@ -342,7 +344,8 @@ async def reset_user(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def settings(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     if uid not in users:
-        users[uid] = {"free": FREE_ALERTS, "filters": {"levels": ["min","medium","max"], "chains": ["SOL","BSC","PUMP"]}}
+        users[uid] = {"free": FREE_ALERTS, "chat_id": update.effective_chat.id, "filters": {"levels": ["min","medium","max"], "chains": ["SOL","BSC","PUMP"]}}
+    users[uid]["chat_id"] = update.effective_chat.id
     f = users[uid]["filters"]
     await update.message.reply_text(
         "*Your Alert Filters*\n\nCustomize what you receive:",
@@ -378,7 +381,7 @@ async def button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text("Your filters are now active.")
 
 # --------------------------------------------------------------------------- #
-#                               SCANNERS                                    #
+#                               SCANNERS (SEND TO CHAT)                     #
 # --------------------------------------------------------------------------- #
 async def pump_scanner(app: Application):
     async with aiohttp.ClientSession() as sess:
@@ -457,9 +460,13 @@ async def pump_scanner(app: Application):
                         msg = format_alert(chain, sym, addr, liq, fdv, vol, pair_addr, level)
                         alerts.append((msg, addr, level, chain))
 
+                    # SEND TO CHAT_ID
                     for msg, addr, level, chain in alerts:
                         sent = 0
                         for uid, u in list(users.items()):
+                            if "chat_id" not in u or u["chat_id"] is None:
+                                continue
+                            chat_id = u["chat_id"]
                             is_premium = u.get("paid") and (u.get("paid_until") is None or datetime.fromisoformat(u["paid_until"]) > datetime.utcnow())
                             if u["free"] <= 0 and not is_premium:
                                 continue
@@ -471,15 +478,15 @@ async def pump_scanner(app: Application):
                             if level in ["large_buy", "upgrade"] and not is_premium:
                                 continue
                             try:
-                                await app.bot.send_message(uid, msg, parse_mode="MarkdownV2", disable_web_page_preview=True)
+                                await app.bot.send_message(chat_id, msg, parse_mode="MarkdownV2", disable_web_page_preview=True)
                                 if u["free"] > 0 and level not in ["large_buy", "upgrade"]:
                                     u["free"] -= 1
                                 sent += 1
                                 if sent % 10 == 0:
                                     await asyncio.sleep(0.3)
                             except Exception as e:
-                                log.warning(f"Send failed: {e}")
-                        log.info(f"PUMP {level.upper()} → {addr} | Sent to {sent}")
+                                log.warning(f"Send failed to chat {chat_id}: {e}")
+                        log.info(f"PUMP {level.upper()} → {addr} | Sent to {sent} chats")
 
                 await asyncio.sleep(30)
             except Exception as e:
@@ -566,9 +573,13 @@ async def dex_scanner(app: Application):
                     msg = format_alert(chain, sym, addr, liq, fdv, vol, pair_addr, level)
                     alerts.append((msg, addr, level, chain))
 
+                # SEND TO CHAT_ID
                 for msg, addr, level, chain in alerts:
                     sent = 0
                     for uid, u in list(users.items()):
+                        if "chat_id" not in u or u["chat_id"] is None:
+                            continue
+                        chat_id = u["chat_id"]
                         is_premium = u.get("paid") and (u.get("paid_until") is None or datetime.fromisoformat(u["paid_until"]) > datetime.utcnow())
                         if u["free"] <= 0 and not is_premium:
                             continue
@@ -580,15 +591,15 @@ async def dex_scanner(app: Application):
                         if level in ["large_buy", "upgrade"] and not is_premium:
                             continue
                         try:
-                            await app.bot.send_message(uid, msg, parse_mode="MarkdownV2", disable_web_page_preview=True)
+                            await app.bot.send_message(chat_id, msg, parse_mode="MarkdownV2", disable_web_page_preview=True)
                             if u["free"] > 0 and level not in ["large_buy", "upgrade"]:
                                 u["free"] -= 1
                             sent += 1
                             if sent % 10 == 0:
                                 await asyncio.sleep(0.3)
                         except Exception as e:
-                            log.warning(f"Send failed: {e}")
-                    log.info(f"DEX {level.upper()} → {addr} | Sent to {sent}")
+                            log.warning(f"Send failed to chat {chat_id}: {e}")
+                    log.info(f"DEX {level.upper()} → {addr} | Sent to {sent} chats")
 
                 await asyncio.sleep(60)
             except Exception as e:
@@ -615,7 +626,7 @@ async def main():
     app.create_task(pump_scanner(app))
     app.create_task(auto_save())
 
-    log.info("BOT STARTED – Scanning DEX + Pump.fun")
+    log.info("BOT STARTED – All alerts in chat")
 
     await app.initialize()
     await app.start()
