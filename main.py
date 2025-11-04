@@ -497,8 +497,12 @@ async def scanner(app: Application):
 # --------------------------------------------------------------------------- #
 #                               MAIN                                        #
 # --------------------------------------------------------------------------- #
+# --------------------------------------------------------------------------- #
+#                               MAIN (GRACEFUL SHUTDOWN)                     #
+# --------------------------------------------------------------------------- #
 async def main():
     app = Application.builder().token(BOT_TOKEN).build()
+
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("pay", pay))
     app.add_handler(CommandHandler("stats", stats))
@@ -509,13 +513,27 @@ async def main():
     app.create_task(auto_save())
 
     log.info("BOT STARTED – /start WILL ALWAYS SEND WELCOME")
+
+    await app.initialize()
+    await app.start()
+    await app.updater.start_polling(drop_pending_updates=True)
+
     try:
-        await app.run_polling(drop_pending_updates=True)
-    except KeyboardInterrupt:
-        log.info("Shutting down...")
+        while True:
+            await asyncio.sleep(3600)
+    except asyncio.CancelledError:
+        pass
+    finally:
+        log.info("Shutting down…")
+        await app.updater.stop()
+        await app.stop()
+        await app.shutdown()
         async with save_lock:
             save_data(data)
-        log.info("Data saved. Goodbye!")
+        log.info("Shutdown complete – data saved")
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        pass
