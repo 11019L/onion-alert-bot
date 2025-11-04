@@ -210,7 +210,10 @@ def build_settings_kb(f):
 # --------------------------------------------------------------------------- #
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
-    log.info(f"/start from {uid}")
+    chat_id = update.effective_chat.id
+    log.info(f"START RECEIVED – User: {uid}, Chat: {chat_id}, Name: {update.effective_user.full_name}")
+
+    await update.message.reply_text("START COMMAND RECEIVED!")
 
     args = ctx.args or []
     source = args[0] if args and args[0].startswith("track_") else "organic"
