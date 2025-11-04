@@ -213,6 +213,7 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     log.info(f"START RECEIVED – User: {uid}, Chat: {chat_id}, Name: {update.effective_user.full_name}")
 
+    # 1. Debug message
     await update.message.reply_text("START COMMAND RECEIVED!")
 
     args = ctx.args or []
@@ -233,7 +234,7 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     user = users[uid]
 
-    # === 1. WELCOME MESSAGE (in chat) ===
+    # 2. Welcome message
     welcome = (
         f"*ONION ALERTS*\n\n"
         f"Free trial: `{user['free']}` alerts left\n"
@@ -242,9 +243,13 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"After payment send TXID:\n`/pay YOUR_TXID`\n"
         f"_Auto-upgrade in less than 2 min!_"
     )
-    await update.message.reply_text(welcome, parse_mode="MarkdownV2")
+    try:
+        await update.message.reply_text(welcome, parse_mode="MarkdownV2")
+        log.info("Welcome message sent")
+    except Exception as e:
+        log.error(f"Welcome failed: {e}")
 
-    # === 2. TEST ALERT DM (direct to user) ===
+    # 3. Test alert DM
     if not user.get("test_sent", False):
         test = (
             f"*TEST ALERT*\n"
@@ -258,9 +263,9 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         try:
             await ctx.bot.send_message(uid, test, parse_mode="MarkdownV2", disable_web_page_preview=True)
             user["test_sent"] = True
-            log.info(f"Test alert sent to {uid}")
+            log.info(f"Test alert DM sent to {uid}")
         except Exception as e:
-            log.warning(f"Failed to send test DM to {uid}: {e}")
+            log.warning(f"Test DM failed for {uid}: {e}")
 
 # === OTHER HANDLERS (unchanged) ===
 async def settings(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -451,7 +456,7 @@ async def scanner(app: Application):
                                 await asyncio.sleep(0.3)
                         except Exception as e:
                             log.warning(f"Send to {uid} failed: {e}")
-                    log.info(f"ALERT {level.upper()} → {addr} | Sent to {sent} users")
+                    log.info(f"ALERT {level.upper()} to {addr} | Sent to {sent} users")
 
                 await asyncio.sleep(60)
             except Exception as e:
@@ -479,13 +484,12 @@ async def main():
 
     log.info("BOT STARTED – polling for updates...")
 
-    # Start polling and keep alive
     await app.initialize()
     await app.start()
     await app.updater.start_polling(drop_pending_updates=True)
 
     try:
-        await asyncio.Event().wait()  # Run forever
+        await asyncio.Event().wait()
     except (KeyboardInterrupt, SystemExit):
         pass
     finally:
