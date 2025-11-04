@@ -10,7 +10,7 @@ from pathlib import Path
 
 import aiohttp
 import requests
-import websockets  # New: pip install websockets
+import websockets
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -37,9 +37,10 @@ NEW_PAIRS_URL = "https://api.dexscreener.com/latest/dex/new-pairs/{chain}"
 SEARCH_URL = "https://api.dexscreener.com/latest/dex/search?q={chain}"
 SOLANA_RPC = "https://api.mainnet-beta.solana.com"
 BSCSCAN_API = "https://api.bscscan.com/api"
-PUMP_WS_URL = "wss://pumpportal.fun/api/data"  # New: Pump.fun WebSocket
+PUMP_WS_URL = "wss://pumpportal.fun/api/data"
 
-DATA_FILE = Path("data.json")
+# RAILWAY FIX: Use /tmp for writable storage
+DATA_FILE = Path("/tmp/data.json")
 SAVE_INTERVAL = 30
 
 # --------------------------------------------------------------------------- #
@@ -63,7 +64,7 @@ def load_data():
                 u.setdefault("test_sent", False)
                 u.setdefault("filters", {
                     "levels": ["min", "medium", "max"],
-                    "chains": ["SOL", "BSC"],
+                    "chains": ["SOL", "BSC", "PUMP"],
                     "premium_only": False
                 })
             return {
@@ -116,7 +117,7 @@ def dex_url(chain, pair):
     return f"https://dexscreener.com/{'solana' if chain == 'SOL' else 'bsc'}/{pair}"
 
 def pump_url(ca):
-    return f"https://pump.fun/{ca}"  # New: Pump.fun link
+    return f"https://pump.fun/{ca}"
 
 def safe_md(t):
     return escape_markdown(str(t), version=2)
@@ -130,7 +131,7 @@ def format_alert(chain, sym, addr, liq, fdv, vol, pair, level):
         f"*CA:* `{safe_md(addr)}`\n"
         f"Liq: ${liq:,.0f} | FDV: ${fdv:,.0f}\n"
         f"5m Vol: ${vol:,.0f}\n"
-        f"[{link}]({link})"
+        f"[View]({link})"
     )
 
 # --------------------------------------------------------------------------- #
@@ -139,7 +140,7 @@ def format_alert(chain, sym, addr, liq, fdv, vol, pair, level):
 async def is_safe_batch(addrs, chain, sess):
     if not addrs:
         return {}
-    chain_id = 56 if chain == "BSC" else 1  # Use SOL chain_id for PUMP too
+    chain_id = 56 if chain == "BSC" else 1
     url = GOPLUS_API.format(chain_id=chain_id, addrs=",".join(addrs))
     now = time.time()
     cached = {a: goplus_cache[a][0] for a in addrs if a in goplus_cache and now - goplus_cache[a][1] < 3600}
@@ -186,11 +187,10 @@ async def detect_large_buy(addr, chain):
     return False
 
 def get_alert_level(liq, fdv, vol, new, spike, buy, chain="SOL"):
-    # Relaxed for PUMP: Lower thresholds for early bonding curve
     if chain == "PUMP":
-        if new and vol >= 200 and fdv >= 5000:  # New: Pump-specific Min (low vol/MC)
+        if new and vol >= 200 and fdv >= 5000:
             return "min"
-        if liq >= 15000 and fdv >= 40000 and vol >= 1500:  # Adjusted Medium
+        if liq >= 15000 and fdv >= 40000 and vol >= 1500:
             return "medium"
     else:
         if new and liq >= 1000 and fdv >= 10000 and vol >= 500:
@@ -214,7 +214,7 @@ def build_settings_kb(f):
         [],
         [InlineKeyboardButton(f"{'ON' if 'SOL' in chains else 'OFF'} Solana", callback_data="toggle_sol")],
         [InlineKeyboardButton(f"{'ON' if 'BSC' in chains else 'OFF'} BSC", callback_data="toggle_bsc")],
-        [InlineKeyboardButton(f"{'ON' if 'PUMP' in chains else 'OFF'} Pump.fun", callback_data="toggle_pump")],  # New
+        [InlineKeyboardButton(f"{'ON' if 'PUMP' in chains else 'OFF'} Pump.fun", callback_data="toggle_pump")],
         [],
         [InlineKeyboardButton("Save Settings", callback_data="save_settings")]
     ])
@@ -224,11 +224,7 @@ def build_settings_kb(f):
 # --------------------------------------------------------------------------- #
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
-    chat_id = update.effective_chat.id
-    log.info(f"START RECEIVED – User: {uid}, Chat: {chat_id}")
-
-    # 1. Debug
-    await update.message.reply_text("START COMMAND RECEIVED!")
+    log.info(f"START from {uid}")
 
     args = ctx.args or []
     source = args[0] if args and args[0].startswith("track_") else "organic"
@@ -243,12 +239,11 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "paid": False,
             "paid_until": None,
             "test_sent": False,
-            "filters": {"levels": ["min", "medium", "max"], "chains": ["SOL", "BSC", "PUMP"], "premium_only": False}  # Added PUMP
+            "filters": {"levels": ["min", "medium", "max"], "chains": ["SOL", "BSC", "PUMP"], "premium_only": False}
         }
 
     user = users[uid]
 
-    # 2. Welcome (HTML)
     welcome_html = (
         f"<b>ONION ALERTS</b>\n\n"
         f"Free trial: <code>{user['free']}</code> alerts left\n"
@@ -257,51 +252,92 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"After payment send TXID:\n<code>/pay YOUR_TXID</code>\n"
         f"<i>Auto-upgrade in less than 2 min!</i>"
     )
-    try:
-        await update.message.reply_text(welcome_html, parse_mode="HTML")
-        log.info("Welcome HTML sent")
-    except Exception as e:
-        log.error(f"Welcome HTML failed: {e}")
-        await update.message.reply_text("Welcome failed. Check logs.")
+    await update.message.reply_text(welcome_html, parse_mode="HTML")
 
-    # 3. Test alert DM
     if not user.get("test_sent", False):
         test = (
-            f"*TEST ALERT \\(PUMP\\)*\\n"
+            f"*TEST ALERT \\(PUMP\\)*\n"
             f"`TESTCOIN`\n"
             f"*CA:* `test123456789abcdefghi123456789abcdefghi`\n"
             f"Liq: $500 | FDV: $8,000\n"
             f"5m Vol: $300\n"
             f"[Pump\\.fun](https://pump\\.fun/test123456789abcdefghi123456789abcdefghi)\n\n"
-            f"_This test does **not** use a free trial\\._"
+            f"_This test does **not** use a free trial_"
         )
         try:
             await ctx.bot.send_message(uid, test, parse_mode="MarkdownV2", disable_web_page_preview=True)
             user["test_sent"] = True
-            log.info(f"Test alert DM sent to {uid}")
+            log.info(f"Test DM sent to {uid}")
         except Exception as e:
             log.warning(f"Test DM failed: {e}")
 
-# New: Test alert command (admin-only)
 async def testalert(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
     msg = (
-        f"*MIN ALERT* \\[PUMP\\]\\n"
-        f"`FAKECOINS`\n"
+        f"*MIN ALERT* \\[PUMP\\]\n"
+        f"`FAKE`\n"
         f"*CA:* `fake1234567890`\n"
         f"Liq: $600 | FDV: $12,000\n"
         f"5m Vol: $450\n"
         f"[Pump\\.fun](https://pump\\.fun/fake1234567890)"
     )
-    try:
-        await ctx.bot.send_message(update.effective_user.id, msg, parse_mode="MarkdownV2")
-        await update.message.reply_text("Fake Pump alert sent!")
-        log.info("Test Pump alert sent")
-    except Exception as e:
-        log.error(f"Test alert failed: {e}")
+    await ctx.bot.send_message(update.effective_user.id, msg, parse_mode="MarkdownV2")
+    await update.message.reply_text("Fake alert sent!")
 
-# ... (other handlers unchanged: settings, button, pay, stats, owner, reset_user)
+async def force(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    await ctx.bot.send_message(update.effective_user.id, "FORCE: BOT IS ALIVE")
+    await update.message.reply_text("Force sent!")
+
+async def pay(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not ctx.args:
+        await update.message.reply_text("Usage: `/pay <TXID>`", parse_mode="MarkdownV2")
+        return
+    txid = ctx.args[0].strip()
+    uid = update.effective_user.id
+    try:
+        url = f"{BSCSCAN_API}?module=account&action=tokentx&address={WALLETS['BSC']}&page=1&offset=20"
+        resp = requests.get(url, timeout=10).json()
+        for tx in resp.get("result", []):
+            if tx.get("hash", "").lower() == txid.lower() and tx.get("tokenSymbol") == "USDT":
+                value = float(tx.get("value", "0")) / 1e6
+                if value >= PRICE_USDT:
+                    users[uid]["paid"] = True
+                    users[uid]["paid_until"] = (datetime.utcnow() + timedelta(days=30)).isoformat()
+                    users[uid]["free"] = 0
+                    await update.message.reply_text("*Payment confirmed!* Premium active.", parse_mode="MarkdownV2")
+                    return
+    except Exception as e:
+        log.error(f"Pay error: {e}")
+    await update.message.reply_text("Invalid TXID.")
+
+async def stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not ctx.args:
+        await update.message.reply_text("Usage: `/stats <username>`", parse_mode="MarkdownV2")
+        return
+    inf = ctx.args[0].lower()
+    if inf not in tracker:
+        await update.message.reply_text("No data.", parse_mode="MarkdownV2")
+        return
+    s = tracker[inf]
+    await update.message.reply_text(
+        f"*{safe_md(inf.upper())}*\nJoins: `{s['joins']}`\nSubs: `{s['subs']}`",
+        parse_mode="MarkdownV2"
+    )
+
+async def owner(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    await update.message.reply_text("Owner panel active.")
+
+async def reset_user(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    target = update.effective_user.id if not ctx.args else int(ctx.args[0])
+    users.pop(target, None)
+    await update.message.reply_text(f"Reset user {target}")
 
 async def settings(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
@@ -341,49 +377,45 @@ async def button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("Settings saved!")
         await query.message.reply_text("Your filters are now active.")
 
-# ... (pay, stats, owner, reset_user unchanged)
-
 # --------------------------------------------------------------------------- #
-#                               SCANNER (DEX + PUMP)                        #
+#                               SCANNERS                                    #
 # --------------------------------------------------------------------------- #
 async def pump_scanner(app: Application):
-    """New: Dedicated Pump.fun WebSocket scanner"""
     async with aiohttp.ClientSession() as sess:
         while True:
             try:
                 candidates = []
-                uri = PUMP_WS_URL
-                async with websockets.connect(uri) as websocket:
-                    log.info("Connected to Pump.fun WS")
-                    while True:  # Listen for events
+                async with websockets.connect(PUMP_WS_URL) as ws:
+                    log.info("Pump.fun WS connected")
+                    while True:
                         try:
-                            event = await asyncio.wait_for(websocket.recv(), timeout=30.0)
+                            event = await asyncio.wait_for(ws.recv(), timeout=30)
                             data = json.loads(event)
-                            if data.get("mint"):  # New token event
+                            if data.get("mint"):
                                 addr = data["mint"]
                                 if addr in seen:
                                     continue
-                                # Fetch details via quick API or RPC (simplified: use vol/MC from event)
-                                vol = data.get("vTokensInLastVersion", 0) / 1e9 * 180  # Approx 5m vol proxy
-                                fdv = data.get("mc", 0)  # Market cap as FDV proxy
-                                liq = fdv * 0.1  # Rough est
+                                vol = data.get("vTokensInLastVersion", 0) / 1e9 * 180
+                                fdv = data.get("mc", 0)
+                                liq = fdv * 0.1
                                 sym = data.get("symbol", "???")[:20]
                                 created_at = data.get("created_timestamp", time.time())
-                                is_new = (time.time() - created_at) < 1800  # <30min
-                                candidates.append(({"baseToken": {"address": addr, "symbol": sym}, "liquidity": {"usd": liq}, "fdv": fdv, "volume": {"m5": vol}, "pairAddress": addr}, "PUMP", "pump", is_new, addr, vol))  # Mock pair format
-                                if len(candidates) >= 20:  # Limit per batch
+                                is_new = (time.time() - created_at) < 1800
+                                candidates.append((
+                                    {"baseToken": {"address": addr, "symbol": sym}, "liquidity": {"usd": liq}, "fdv": fdv, "volume": {"m5": vol}, "pairAddress": addr},
+                                    "PUMP", "pump", is_new, addr, vol
+                                ))
+                                if len(candidates) >= 20:
                                     break
                         except asyncio.TimeoutError:
-                            log.warning("Pump WS timeout — reconnecting")
                             break
                         except Exception as e:
-                            log.error(f"Pump WS error: {e}")
+                            log.error(f"WS error: {e}")
                             break
 
                 if candidates:
-                    # Process like DEX: safety, levels, alerts
                     per_chain = defaultdict(list)
-                    for _, chain, _, _, addr in candidates:  # Simplified
+                    for _, chain, _, _, addr in candidates:
                         per_chain[chain].append(addr)
                     safety = {}
                     for chain, addrs in per_chain.items():
@@ -425,14 +457,13 @@ async def pump_scanner(app: Application):
                         msg = format_alert(chain, sym, addr, liq, fdv, vol, pair_addr, level)
                         alerts.append((msg, addr, level, chain))
 
-                    # Send alerts (same as DEX)
                     for msg, addr, level, chain in alerts:
                         sent = 0
                         for uid, u in list(users.items()):
                             is_premium = u.get("paid") and (u.get("paid_until") is None or datetime.fromisoformat(u["paid_until"]) > datetime.utcnow())
                             if u["free"] <= 0 and not is_premium:
                                 continue
-                            f = u.get("filters", {"levels": ["min","medium","max"], "chains": ["SOL","BSC","PUMP"], "premium_only": False})
+                            f = u.get("filters", {"levels": ["min","medium","max"], "chains": ["SOL","BSC","PUMP"]})
                             if level not in f["levels"] or chain not in f["chains"]:
                                 continue
                             if f.get("premium_only", False) and level not in ["large_buy", "upgrade"]:
@@ -447,15 +478,15 @@ async def pump_scanner(app: Application):
                                 if sent % 10 == 0:
                                     await asyncio.sleep(0.3)
                             except Exception as e:
-                                log.warning(f"Send to {uid} failed: {e}")
-                        log.info(f"PUMP ALERT {level.upper()} → {addr} | Sent to {sent} users")
+                                log.warning(f"Send failed: {e}")
+                        log.info(f"PUMP {level.upper()} → {addr} | Sent to {sent}")
 
-                await asyncio.sleep(30)  # Scan interval
+                await asyncio.sleep(30)
             except Exception as e:
                 log.error(f"Pump scanner error: {e}")
                 await asyncio.sleep(60)
 
-async def dex_scanner(app: Application):  # Renamed original scanner
+async def dex_scanner(app: Application):
     async with aiohttp.ClientSession() as sess:
         while True:
             try:
@@ -465,7 +496,7 @@ async def dex_scanner(app: Application):  # Renamed original scanner
                         async with sess.get(NEW_PAIRS_URL.format(chain=slug), timeout=10) as r:
                             if r.status == 200:
                                 for p in (await r.json()).get("pairs", [])[:50]:
-                                    candidates.append((p, chain, slug, True, p.get("pairAddress")))  # is_new=True
+                                    candidates.append((p, chain, slug, True, p.get("pairAddress")))
                     except:
                         pass
                     try:
@@ -480,7 +511,6 @@ async def dex_scanner(app: Application):  # Renamed original scanner
                     await asyncio.sleep(60)
                     continue
 
-                # ... (rest of original DEX processing unchanged)
                 addr_to_pair = {}
                 for p, chain, slug, is_new_pair, pair_addr in candidates:
                     base = p.get("baseToken", {})
@@ -539,9 +569,26 @@ async def dex_scanner(app: Application):  # Renamed original scanner
                 for msg, addr, level, chain in alerts:
                     sent = 0
                     for uid, u in list(users.items()):
-                        # ... (sending logic unchanged)
-                        pass  # Abbrev for brevity
-                    log.info(f"DEX ALERT {level.upper()} → {addr} | Sent to {sent} users")
+                        is_premium = u.get("paid") and (u.get("paid_until") is None or datetime.fromisoformat(u["paid_until"]) > datetime.utcnow())
+                        if u["free"] <= 0 and not is_premium:
+                            continue
+                        f = u.get("filters", {"levels": ["min","medium","max"], "chains": ["SOL","BSC","PUMP"]})
+                        if level not in f["levels"] or chain not in f["chains"]:
+                            continue
+                        if f.get("premium_only", False) and level not in ["large_buy", "upgrade"]:
+                            continue
+                        if level in ["large_buy", "upgrade"] and not is_premium:
+                            continue
+                        try:
+                            await app.bot.send_message(uid, msg, parse_mode="MarkdownV2", disable_web_page_preview=True)
+                            if u["free"] > 0 and level not in ["large_buy", "upgrade"]:
+                                u["free"] -= 1
+                            sent += 1
+                            if sent % 10 == 0:
+                                await asyncio.sleep(0.3)
+                        except Exception as e:
+                            log.warning(f"Send failed: {e}")
+                    log.info(f"DEX {level.upper()} → {addr} | Sent to {sent}")
 
                 await asyncio.sleep(60)
             except Exception as e:
@@ -554,9 +601,9 @@ async def dex_scanner(app: Application):  # Renamed original scanner
 async def main():
     app = Application.builder().token(BOT_TOKEN).build()
 
-    # Add handlers
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("testalert", testalert))  # New
+    app.add_handler(CommandHandler("testalert", testalert))
+    app.add_handler(CommandHandler("force", force))
     app.add_handler(CommandHandler("pay", pay))
     app.add_handler(CommandHandler("stats", stats))
     app.add_handler(CommandHandler("owner", owner))
@@ -564,16 +611,15 @@ async def main():
     app.add_handler(CommandHandler("settings", settings))
     app.add_handler(CallbackQueryHandler(button))
 
-    # Start background tasks: DEX + PUMP
     app.create_task(dex_scanner(app))
-    app.create_task(pump_scanner(app))  # New
+    app.create_task(pump_scanner(app))
     app.create_task(auto_save())
 
-    log.info("BOT STARTED – Scanning DEX + Pump.fun!")
+    log.info("BOT STARTED – Scanning DEX + Pump.fun")
 
     await app.initialize()
     await app.start()
-    await app.updater.start_polling(drop_pending_updates=True)
+    await app.updater.start_polling(drop_pending_updates=True, timeout=30)
 
     try:
         await asyncio.Event().wait()
@@ -586,7 +632,6 @@ async def main():
         await app.shutdown()
         async with save_lock:
             save_data(data)
-        log.info("Shutdown complete")
 
 if __name__ == "__main__":
     asyncio.run(main())
