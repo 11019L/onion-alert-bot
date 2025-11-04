@@ -233,33 +233,40 @@ def get_alert_level(liq, fdv, vol, is_new_pair, volume_spike, large_buy):
 # --------------------------------------------------------------------------- #
 #                               COMMANDS                                    #
 # --------------------------------------------------------------------------- #
+# --------------------------------------------------------------
+#  /start  –  ALWAYS send welcome, test-alert ONLY once
+# --------------------------------------------------------------
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
+    username = update.effective_user.username or "Unknown"
+    log.info(f"/start from user {uid} (@{username})")
+
     args = ctx.args or []
     source = args[0] if args and args[0].startswith("track_") else "organic"
     influencer = source.split("_", 1)[1] if "_" in source else None
 
-    # Influencer tracking
-    if influencer and influencer not in tracker:
-        tracker[influencer] = {"joins": 0, "subs": 0, "revenue": 0.0}
+    # --- Influencer tracking ---
     if influencer:
+        if influencer not in tracker:
+            tracker[influencer] = {"joins": 0, "subs": 0, "revenue": 0.0}
         tracker[influencer]["joins"] += 1
+        log.info(f"Referral from {influencer}")
 
-    # Initialize user if new
+    # --- Ensure user exists ---
     if uid not in users:
         users[uid] = {
             "free": FREE_ALERTS,
             "source": source,
             "paid": False,
             "paid_until": None,
-            "welcome_shown": False,
-            "test_sent": False,
+            "test_sent": False,   # ← only this is "once"
         }
+        log.info(f"New user {uid} created")
 
     user = users[uid]
 
-    # ALWAYS SEND WELCOME
-    welcome_msg = (
+    # --- ALWAYS SEND WELCOME ---
+    welcome = (
         f"*ONION ALERTS*\n\n"
         f"Free trial: `{user['free']}` alerts left\n"
         f"Subscribe: `${PRICE_USDT}/mo`\n\n"
@@ -267,12 +274,15 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"After payment send TXID:\n`/pay YOUR_TXID`\n"
         f"_Auto-upgrade in less than 2 min!_"
     )
-    await update.message.reply_text(welcome_msg, parse_mode="MarkdownV2")
-    user["welcome_shown"] = True
+    try:
+        await update.message.reply_text(welcome, parse_mode="MarkdownV2")
+        log.info(f"Welcome sent to {uid}")
+    except Exception as e:
+        log.error(f"Failed to send welcome to {uid}: {e}")
 
-    # SEND TEST ALERT ONLY ONCE
+    # --- SEND TEST ALERT ONLY ONCE ---
     if not user.get("test_sent", False):
-        test_msg = (
+        test = (
             f"*TEST ALERT*\n"
             f"`ONIONCOIN`\n"
             f"*CA:* `onion123456789abcdefghi123456789abcdefghi`\n"
@@ -281,8 +291,12 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"[DexScreener](https://dexscreener.com/solana/onion123456789abcdefghi123456789abcdefghi)\n\n"
             f"_This test does **not** use a free trial._"
         )
-        await ctx.bot.send_message(uid, test_msg, parse_mode="MarkdownV2", disable_web_page_preview=True)
-        user["test_sent"] = True
+        try:
+            await ctx.bot.send_message(uid, test, parse_mode="MarkdownV2", disable_web_page_preview=True)
+            user["test_sent"] = True
+            log.info(f"Test alert sent to {uid}")
+        except Exception as e:
+            log.error(f"Failed to send test alert to {uid}: {e}")
 
 async def pay(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not ctx.args:
