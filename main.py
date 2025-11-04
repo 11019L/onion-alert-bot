@@ -65,13 +65,9 @@ def load_data() -> dict:
             seen = {k: v for k, v in raw.get("seen", {}).items() if now - v < 86_400}
             last = {k: v for k, v in raw.get("last_alerted", {}).items() if now - v < 3_600}
 
-            # Migrate old users: add missing flags
             users_raw = raw.get("users", {})
-            for uid, u in users_raw.items():
-                if "welcome_shown" not in u:
-                    u["welcome_shown"] = False
-                if "test_sent" not in u:
-                    u["test_sent"] = False
+            for u in users_raw.values():
+                u.setdefault("test_sent", False)
 
             return {
                 "tracker": raw.get("tracker", {}),
@@ -233,9 +229,6 @@ def get_alert_level(liq, fdv, vol, is_new_pair, volume_spike, large_buy):
 # --------------------------------------------------------------------------- #
 #                               COMMANDS                                    #
 # --------------------------------------------------------------------------- #
-# --------------------------------------------------------------
-#  /start  –  ALWAYS send welcome, test-alert ONLY once
-# --------------------------------------------------------------
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     username = update.effective_user.username or "Unknown"
@@ -245,27 +238,24 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     source = args[0] if args and args[0].startswith("track_") else "organic"
     influencer = source.split("_", 1)[1] if "_" in source else None
 
-    # --- Influencer tracking ---
     if influencer:
         if influencer not in tracker:
             tracker[influencer] = {"joins": 0, "subs": 0, "revenue": 0.0}
         tracker[influencer]["joins"] += 1
         log.info(f"Referral from {influencer}")
 
-    # --- Ensure user exists ---
     if uid not in users:
         users[uid] = {
             "free": FREE_ALERTS,
             "source": source,
             "paid": False,
             "paid_until": None,
-            "test_sent": False,   # ← only this is "once"
+            "test_sent": False,
         }
         log.info(f"New user {uid} created")
 
     user = users[uid]
 
-    # --- ALWAYS SEND WELCOME ---
     welcome = (
         f"*ONION ALERTS*\n\n"
         f"Free trial: `{user['free']}` alerts left\n"
@@ -280,7 +270,6 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         log.error(f"Failed to send welcome to {uid}: {e}")
 
-    # --- SEND TEST ALERT ONLY ONCE ---
     if not user.get("test_sent", False):
         test = (
             f"*TEST ALERT*\n"
@@ -373,6 +362,20 @@ async def owner(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"*TOP INFLUENCERS*\n{top_txt}",
         parse_mode="MarkdownV2",
     )
+
+# --------------------------------------------------------------------------- #
+#                               ADMIN RESET                                 #
+# --------------------------------------------------------------------------- #
+async def reset_user(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("Unauthorized.")
+        return
+    target = update.effective_user.id if not ctx.args else int(ctx.args[0])
+    if target in users:
+        del users[target]
+        await update.message.reply_text(f"User {target} reset.")
+    else:
+        await update.message.reply_text(f"User {target} not found.")
 
 # --------------------------------------------------------------------------- #
 #                               SCANNER                                     #
