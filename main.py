@@ -126,11 +126,16 @@ def safe_md(t):
 def format_alert(chain, sym, addr, liq, fdv, vol, pair, level):
     e = {"min":"Min","medium":"Medium","max":"Max","large_buy":"SNIPE","upgrade":"UPGRADED"}.get(level, level.upper())
     link = pump_url(addr) if chain == "PUMP" else dex_url(chain, pair)
+    # Escape ALL special chars
+    sym_esc = escape_markdown(sym, version=2)
+    addr_esc = escape_markdown(addr, version=2)
+    chain_esc = escape_markdown(chain, version=2)
+    e_esc = escape_markdown(e, version=2)
     return (
-        f"*{e} ALERT* [{safe_md(chain)}]\n"
-        f"`{safe_md(sym)}`\n"
-        f"*CA:* `{safe_md(addr)}`\n"
-        f"Liq: ${liq:,.0f} \| FDV: ${fdv:,.0f}\n"
+        f"*{e_esc} ALERT* [{chain_esc}]\n"
+        f"`{sym_esc}`\n"
+        f"*CA:* `{addr_esc}`\n"
+        f"Liq: ${liq:,.0f} \\| FDV: ${fdv:,.0f}\n"
         f"5m Vol: ${vol:,.0f}\n"
         f"[View]({link})"
     )
@@ -265,7 +270,7 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"*TEST ALERT \\(PUMP\\)*\n"
             f"`TESTCOIN`\n"
             f"*CA:* `test123456789abcdefghi123456789abcdefghi`\n"
-            f"Liq: $500 | FDV: $8,000\n"
+            f"Liq: $500 \\| FDV: $8,000\n"
             f"5m Vol: $300\n"
             f"[Pump\\.fun](https://pump\\.fun/test123456789abcdefghi123456789abcdefghi)\n\n"
             f"_This test does **not** use a free trial_"
@@ -281,7 +286,7 @@ async def testalert(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"*MIN ALERT* \\[PUMP\\]\n"
         f"`FAKE`\n"
         f"*CA:* `fake1234567890`\n"
-        f"Liq: $600 | FDV: $12,000\n"
+        f"Liq: $600 \\| FDV: $12,000\n"
         f"5m Vol: $450\n"
         f"[Pump\\.fun](https://pump\\.fun/fake1234567890)"
     )
