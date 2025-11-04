@@ -7,6 +7,10 @@ import logging
 from collections import defaultdict, deque
 from datetime import datetime, timedelta
 from pathlib import Path
+from telegram.helpers import escape_markdown
+
+def safe_md(t):
+    return escape_markdown(str(t), version=2)
 
 import aiohttp
 import requests
@@ -211,9 +215,9 @@ def build_settings_kb(f):
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     chat_id = update.effective_chat.id
-    log.info(f"START RECEIVED – User: {uid}, Chat: {chat_id}, Name: {update.effective_user.full_name}")
+    log.info(f"START RECEIVED – User: {uid}, Chat: {chat_id}")
 
-    # 1. Debug message
+    # 1. Debug message (plain text)
     await update.message.reply_text("START COMMAND RECEIVED!")
 
     args = ctx.args or []
@@ -234,38 +238,41 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     user = users[uid]
 
-    # 2. Welcome message
+    # === 2. WELCOME MESSAGE (FIXED MARKDOWN) ===
+    wallet_escaped = safe_md(WALLETS["BSC"])
     welcome = (
         f"*ONION ALERTS*\n\n"
         f"Free trial: `{user['free']}` alerts left\n"
         f"Subscribe: `${PRICE_USDT}/mo`\n\n"
-        f"*Pay USDT (BSC):*\n`{WALLETS['BSC']}`\n\n"
-        f"After payment send TXID:\n`/pay YOUR_TXID`\n"
-        f"_Auto-upgrade in less than 2 min!_"
+        f"*Pay USDT \\(BSC\\):*\n`{wallet_escaped}`\n\n"
+        f"After payment send TXID:\n`/pay YOUR\\_TXID`\n"
+        f"_Auto\\-upgrade in less than 2 min!_"
     )
     try:
         await update.message.reply_text(welcome, parse_mode="MarkdownV2")
         log.info("Welcome message sent")
     except Exception as e:
         log.error(f"Welcome failed: {e}")
+        await update.message.reply_text("Welcome failed (Markdown error). Check logs.")
 
-    # 3. Test alert DM
+    # === 3. TEST ALERT DM (FIXED MARKDOWN) ===
     if not user.get("test_sent", False):
         test = (
             f"*TEST ALERT*\n"
             f"`ONIONCOIN`\n"
             f"*CA:* `onion123456789abcdefghi123456789abcdefghi`\n"
-            f"Liq: $9,200 | FDV: $52,000\n"
+            f"Liq: $9,200 \\| FDV: $52,000\n"
             f"5m Vol: $15,600\n"
             f"[DexScreener](https://dexscreener.com/solana/onion123456789abcdefghi123456789abcdefghi)\n\n"
-            f"_This test does **not** use a free trial._"
+            f"_This test does **not** use a free trial\\._"
         )
         try:
             await ctx.bot.send_message(uid, test, parse_mode="MarkdownV2", disable_web_page_preview=True)
             user["test_sent"] = True
             log.info(f"Test alert DM sent to {uid}")
         except Exception as e:
-            log.warning(f"Test DM failed for {uid}: {e}")
+            log.warning(f"Test DM failed: {e}")
+            await ctx.bot.send_message(uid, "TEST DM FAILED (check bot logs)", disable_notification=True)
 
 # === OTHER HANDLERS (unchanged) ===
 async def settings(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
