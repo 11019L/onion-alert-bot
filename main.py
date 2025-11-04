@@ -217,7 +217,7 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     log.info(f"START RECEIVED – User: {uid}, Chat: {chat_id}")
 
-    # 1. Debug message (plain text)
+    # 1. Debug
     await update.message.reply_text("START COMMAND RECEIVED!")
 
     args = ctx.args or []
@@ -238,24 +238,23 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     user = users[uid]
 
-    # === 2. WELCOME MESSAGE (FIXED MARKDOWN) ===
-    wallet_escaped = safe_md(WALLETS["BSC"])
-    welcome = (
-        f"*ONION ALERTS*\n\n"
-        f"Free trial: `{user['free']}` alerts left\n"
-        f"Subscribe: `${PRICE_USDT}/mo`\n\n"
-        f"*Pay USDT \\(BSC\\):*\n`{wallet_escaped}`\n\n"
-        f"After payment send TXID:\n`/pay YOUR\\_TXID`\n"
-        f"_Auto\\-upgrade in less than 2 min!_"
+    # === 2. WELCOME — USE HTML (NO MARKDOWN ERRORS) ===
+    welcome_html = (
+        f"<b>ONION ALERTS</b>\n\n"
+        f"Free trial: <code>{user['free']}</code> alerts left\n"
+        f"Subscribe: <code>${PRICE_USDT}/mo</code>\n\n"
+        f"<b>Pay USDT (BSC):</b>\n<code>{WALLETS['BSC']}</code>\n\n"
+        f"After payment send TXID:\n<code>/pay YOUR_TXID</code>\n"
+        f"<i>Auto-upgrade in less than 2 min!</i>"
     )
     try:
-        await update.message.reply_text(welcome, parse_mode="MarkdownV2")
-        log.info("Welcome message sent")
+        await update.message.reply_text(welcome_html, parse_mode="HTML")
+        log.info("Welcome HTML sent")
     except Exception as e:
-        log.error(f"Welcome failed: {e}")
-        await update.message.reply_text("Welcome failed (Markdown error). Check logs.")
+        log.error(f"Welcome HTML failed: {e}")
+        await update.message.reply_text("Welcome failed. Check logs.")
 
-    # === 3. TEST ALERT DM (FIXED MARKDOWN) ===
+    # === 3. TEST ALERT DM (KEEP MARKDOWNV2 — IT WORKS) ===
     if not user.get("test_sent", False):
         test = (
             f"*TEST ALERT*\n"
@@ -264,7 +263,7 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"Liq: $9,200 \\| FDV: $52,000\n"
             f"5m Vol: $15,600\n"
             f"[DexScreener](https://dexscreener.com/solana/onion123456789abcdefghi123456789abcdefghi)\n\n"
-            f"_This test does **not** use a free trial\\._"
+            f"_This test does **not** use a free trial\\_."
         )
         try:
             await ctx.bot.send_message(uid, test, parse_mode="MarkdownV2", disable_web_page_preview=True)
@@ -272,7 +271,6 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             log.info(f"Test alert DM sent to {uid}")
         except Exception as e:
             log.warning(f"Test DM failed: {e}")
-            await ctx.bot.send_message(uid, "TEST DM FAILED (check bot logs)", disable_notification=True)
 
 # === OTHER HANDLERS (unchanged) ===
 async def settings(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
