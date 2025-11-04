@@ -500,18 +500,19 @@ async def main():
     app.add_handler(CommandHandler("pay", pay))
     app.add_handler(CommandHandler("stats", stats))
     app.add_handler(CommandHandler("owner", owner))
+    app.add_handler(CommandHandler("reset", reset_user))
 
-    app.job_queue.run_once(lambda _: None, 0)
     app.create_task(scanner(app))
     app.create_task(auto_save())
 
-    log.info("ONION ALERTS LIVE – Welcome + Test Alert FIXED")
-    await app.run_polling(drop_pending_updates=True)
-
-if __name__ == "__main__":
+    log.info("BOT STARTED – /start WILL ALWAYS SEND WELCOME")
     try:
-        asyncio.run(main())
+        await app.run_polling(drop_pending_updates=True)
     except KeyboardInterrupt:
+        log.info("Shutting down...")
         async with save_lock:
             save_data(data)
-        log.info("Shutdown – data saved")
+        log.info("Data saved. Goodbye!")
+
+if __name__ == "__main__":
+    asyncio.run(main())
