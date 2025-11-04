@@ -10,13 +10,12 @@ from pathlib import Path
 from typing import Dict, Any
 
 import aiohttp
-import requests  # for BSCScan & Solana RPC
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+import requests
+from telegram import Update
 from telegram.ext import (
     Application,
     CommandHandler,
     ContextTypes,
-    CallbackQueryHandler,
 )
 from telegram.helpers import escape_markdown
 
@@ -65,12 +64,21 @@ def load_data() -> dict:
             now = time.time()
             seen = {k: v for k, v in raw.get("seen", {}).items() if now - v < 86_400}
             last = {k: v for k, v in raw.get("last_alerted", {}).items() if now - v < 3_600}
+
+            # Migrate old users: add missing flags
+            users_raw = raw.get("users", {})
+            for uid, u in users_raw.items():
+                if "welcome_shown" not in u:
+                    u["welcome_shown"] = False
+                if "test_sent" not in u:
+                    u["test_sent"] = False
+
             return {
                 "tracker": raw.get("tracker", {}),
-                "users": raw.get("users", {}),
+                "users": users_raw,
                 "seen": seen,
                 "last_alerted": last,
-                "token_state": raw.get("token_state", {}),  # new
+                "token_state": raw.get("token_state", {}),
             }
         except Exception as exc:
             log.error(f"Failed to load {DATA_FILE}: {exc}")
@@ -96,7 +104,7 @@ tracker = data["tracker"]
 users = data["users"]
 seen = data["seen"]
 last_alerted = data["last_alerted"]
-token_state = data["token_state"]  # {addr: {"sent_levels": [], "last_vol": 0}}
+token_state = data["token_state"]
 
 vol_hist: defaultdict[str, deque] = defaultdict(lambda: deque(maxlen=5))
 goplus_cache: dict[str, tuple[bool, float]] = {}
@@ -194,7 +202,7 @@ async def detect_large_buy(addr: str, chain: str) -> bool:
                     pre = tx["result"]["meta"]["preBalances"][0]
                     post = tx["result"]["meta"]["postBalances"][0]
                     sol_in = (pre - post) / 1e9
-                    if sol_in * 180 > 2000:  # >$2k at $180/SOL
+                    if sol_in * 180 > 2000:
                         return True
         except:
             pass
@@ -231,36 +239,50 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     source = args[0] if args and args[0].startswith("track_") else "organic"
     influencer = source.split("_", 1)[1] if "_" in source else None
 
+    # Influencer tracking
     if influencer and influencer not in tracker:
         tracker[influencer] = {"joins": 0, "subs": 0, "revenue": 0.0}
     if influencer:
         tracker[influencer]["joins"] += 1
 
+    # Initialize user if new
     if uid not in users:
-        users[uid] = {"free": FREE_ALERTS, "source": source, "paid": False, "paid_until": None}
-    free_left = users[uid]["free"]
+        users[uid] = {
+            "free": FREE_ALERTS,
+            "source": source,
+            "paid": False,
+            "paid_until": None,
+            "welcome_shown": False,
+            "test_sent": False,
+        }
 
-    msg = (
+    user = users[uid]
+
+    # ALWAYS SEND WELCOME
+    welcome_msg = (
         f"*ONION ALERTS*\n\n"
-        f"Free trial: `{free_left}` alerts left\n"
+        f"Free trial: `{user['free']}` alerts left\n"
         f"Subscribe: `${PRICE_USDT}/mo`\n\n"
         f"*Pay USDT (BSC):*\n`{WALLETS['BSC']}`\n\n"
         f"After payment send TXID:\n`/pay YOUR_TXID`\n"
-        f"_Auto-upgrade in <2 min!_"
+        f"_Auto-upgrade in less than 2 min!_"
     )
-    await update.message.reply_text(msg, parse_mode="MarkdownV2")
+    await update.message.reply_text(welcome_msg, parse_mode="MarkdownV2")
+    user["welcome_shown"] = True
 
-    # TEST ALERT — DOES NOT COUNT
-    test = (
-        f"*TEST ALERT*\n"
-        f"`ONIONCOIN`\n"
-        f"*CA:* `onion123456789abcdefghi123456789abcdefghi`\n"
-        f"Liq: $9,200 | FDV: $52,000\n"
-        f"5m Vol: $15,600\n"
-        f"[DexScreener](https://dexscreener.com/solana/onion123456789abcdefghi123456789abcdefghi)\n\n"
-        f"_Test alert — does NOT use a free trial_"
-    )
-    await ctx.bot.send_message(uid, test, parse_mode="MarkdownV2", disable_web_page_preview=True)
+    # SEND TEST ALERT ONLY ONCE
+    if not user.get("test_sent", False):
+        test_msg = (
+            f"*TEST ALERT*\n"
+            f"`ONIONCOIN`\n"
+            f"*CA:* `onion123456789abcdefghi123456789abcdefghi`\n"
+            f"Liq: $9,200 | FDV: $52,000\n"
+            f"5m Vol: $15,600\n"
+            f"[DexScreener](https://dexscreener.com/solana/onion123456789abcdefghi123456789abcdefghi)\n\n"
+            f"_This test does **not** use a free trial._"
+        )
+        await ctx.bot.send_message(uid, test_msg, parse_mode="MarkdownV2", disable_web_page_preview=True)
+        user["test_sent"] = True
 
 async def pay(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not ctx.args:
@@ -382,7 +404,6 @@ async def scanner(app: Application):
                     await asyncio.sleep(60)
                     continue
 
-                # Rug check
                 per_chain = defaultdict(list)
                 for addr, (_, chain, _, _, _) in addr_to_pair.items():
                     per_chain[chain].append(addr)
@@ -411,18 +432,16 @@ async def scanner(app: Application):
                     if not level:
                         continue
 
-                    # Track state
                     state = token_state.get(addr, {"sent_levels": [], "last_vol": 0})
                     sent_before = level in state["sent_levels"]
 
-                    # Resend logic
                     if sent_before:
                         if level == "max" and large_buy:
                             level = "large_buy"
                         elif level == "medium" and "min" in state["sent_levels"]:
                             level = "upgrade"
                         else:
-                            continue  # already sent
+                            continue
 
                     state["sent_levels"].append(level)
                     state["last_vol"] = vol
@@ -433,23 +452,23 @@ async def scanner(app: Application):
                     msg = format_alert(chain, sym, addr, liq, fdv, vol, pair_addr, level)
                     alerts.append((msg, addr, level))
 
-                # SEND
                 for msg, addr, level in alerts:
                     sent = 0
                     for uid, u in list(users.items()):
                         is_premium = u.get("paid") and (u.get("paid_until") is None or datetime.fromisoformat(u["paid_until"]) > datetime.utcnow())
-                        if u["free"] > 0 or is_premium:
-                            if level in ["large_buy", "upgrade"] and not is_premium:
-                                continue  # premium only
-                            try:
-                                await app.bot.send_message(uid, msg, parse_mode="MarkdownV2", disable_web_page_preview=True)
-                                if u["free"] > 0 and level not in ["large_buy", "upgrade"]:
-                                    u["free"] -= 1
-                                sent += 1
-                                if sent % 10 == 0:
-                                    await asyncio.sleep(0.3)
-                            except Exception as exc:
-                                log.warning(f"Send to {uid} failed: {exc}")
+                        if u["free"] <= 0 and not is_premium:
+                            continue
+                        if level in ["large_buy", "upgrade"] and not is_premium:
+                            continue
+                        try:
+                            await app.bot.send_message(uid, msg, parse_mode="MarkdownV2", disable_web_page_preview=True)
+                            if u["free"] > 0 and level not in ["large_buy", "upgrade"]:
+                                u["free"] -= 1
+                            sent += 1
+                            if sent % 10 == 0:
+                                await asyncio.sleep(0.3)
+                        except Exception as exc:
+                            log.warning(f"Send to {uid} failed: {exc}")
                     log.info(f"ALERT {level.upper()} → {addr} | Sent to {sent} users")
 
                 await asyncio.sleep(60)
@@ -472,7 +491,7 @@ async def main():
     app.create_task(scanner(app))
     app.create_task(auto_save())
 
-    log.info("ONION ALERTS LIVE – Min/Medium/Max + Resends + Premium Only")
+    log.info("ONION ALERTS LIVE – Welcome + Test Alert FIXED")
     await app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
