@@ -130,7 +130,7 @@ def format_alert(chain, sym, addr, liq, fdv, vol, pair, level):
         f"*{e} ALERT* [{safe_md(chain)}]\n"
         f"`{safe_md(sym)}`\n"
         f"*CA:* `{safe_md(addr)}`\n"
-        f"Liq: ${liq:,.0f} | FDV: ${fdv:,.0f}\n"
+        f"Liq: ${liq:,.0f} \| FDV: ${fdv:,.0f}\n"
         f"5m Vol: ${vol:,.0f}\n"
         f"[View]({link})"
     )
