@@ -421,9 +421,9 @@ async def pump_scanner(app: Application):
 
                 for token in tokens:
                     try:
-                       addr = token.get("mint")
-if not addr or addr == "null" or addr in seen:
-    continue
+                        addr = token.get("mint")
+                        if not addr or addr == "null" or addr in seen:
+                            continue
 
                         sym = token.get("symbol", "???")[:20]
                         vol = token.get("volumeUSD", 0)
@@ -470,7 +470,7 @@ if not addr or addr == "null" or addr in seen:
 
                 # Pagination
                 cursor = data.get("cursor")
-                await asyncio.sleep(8)  # Poll every 8s = near real-time
+                await asyncio.sleep(8)
 
             except Exception as e:
                 log.error(f"PUMP SCANNER ERROR: {e}")
