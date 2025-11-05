@@ -38,10 +38,10 @@ SEARCH_URL = "https://api.dexscreener.com/latest/dex/search?q={chain}"
 SOLANA_RPC = "https://api.mainnet-beta.solana.com"
 BSCSCAN_API = "https://api.bscscan.com/api"
 
-# WORKING PUMP.FUN WEBSOCKET (REAL-TIME)
+# OFFICIAL PUMP.FUN WEBSOCKET
 PUMP_WS_URL = "wss://pump.fun/ws"
 
-# RAILWAY FIX
+# RAILWAY
 DATA_FILE = Path("/tmp/data.json")
 SAVE_INTERVAL = 30
 
@@ -59,8 +59,7 @@ def load_data():
         try:
             raw = json.loads(DATA_FILE.read_text())
             now = time.time()
-            # CLEAR SEEN ON STARTUP → FIXES BLOCKED ALERTS
-            seen = {}
+            seen = {}  # CLEARED ON STARTUP
             last_alerted = {}
             users_raw = raw.get("users", {})
             for u in users_raw.values():
@@ -122,9 +121,6 @@ def dex_url(chain, pair):
 
 def pump_url(ca):
     return f"https://pump.fun/{ca}"
-
-def safe_md(t):
-    return escape_markdown(str(t), version=2)
 
 def format_alert(chain, sym, addr, liq, fdv, vol, pair, level):
     e = {"min":"Min","medium":"Medium","max":"Max","large_buy":"SNIPE","upgrade":"UPGRADED"}.get(level, level.upper())
@@ -207,19 +203,7 @@ def get_alert_level(liq, fdv, vol, new, spike, buy, chain="SOL"):
     if buy and spike:
         return "max"
     return None
-async def testalert(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-    msg = (
-        f"*MIN ALERT* \\[PUMP\\]\n"
-        f"`FAKE`\n"
-        f"*CA:* `fake1234567890`\n"
-        f"Liq: $600 \\| FDV: $12,000\n"
-        f"5m Vol: $450\n"
-        f"[Pump\\.fun](https://pump\\.fun/fake1234567890)"
-    )
-    await update.message.reply_text(msg, parse_mode="MarkdownV2")
-    await update.message.reply_text("Fake alert sent in chat!")
+
 # --------------------------------------------------------------------------- #
 #                               FILTERS                                     #
 # --------------------------------------------------------------------------- #
@@ -290,10 +274,124 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         user["test_sent"] = True
         log.info(f"Test alert sent in chat {chat_id}")
 
-# ... (other commands unchanged: testalert, force, pay, stats, owner, reset_user, settings, button)
+async def testalert(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    msg = (
+        f"*MIN ALERT* \\[PUMP\\]\n"
+        f"`FAKE`\n"
+        f"*CA:* `fake1234567890`\n"
+        f"Liq: $600 \\| FDV: $12,000\n"
+        f"5m Vol: $450\n"
+        f"[Pump\\.fun](https://pump\\.fun/fake1234567890)"
+    )
+    await update.message.reply_text(msg, parse_mode="MarkdownV2")
+    await update.message.reply_text("Fake alert sent in chat!")
+
+async def force(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    await update.message.reply_text("FORCE: BOT IS ALIVE IN THIS CHAT")
+
+async def pay(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not ctx.args:
+        await update.message.reply_text("Usage: `/pay <TXID>`", parse_mode="MarkdownV2")
+        return
+    txid = ctx.args[0].strip()
+    uid = update.effective_user.id
+    try:
+        url = f"{BSCSCAN_API}?module=account&action=tokentx&address={WALLETS['BSC']}&page=1&offset=20"
+        resp = requests.get(url, timeout=10).json()
+        for tx in resp.get("result", []):
+            if tx.get("hash", "").lower() == txid.lower() and tx.get("tokenSymbol") == "USDT":
+                value = float(tx.get("value", "0")) / 1e6
+                if value >= PRICE_USDT:
+                    users[uid]["paid"] = True
+                    users[uid]["paid_until"] = (datetime.utcnow() + timedelta(days=30)).isoformat()
+                    users[uid]["free"] = 0
+
+                    # INFLUENCER REVENUE TRACKING
+                    user = users[uid]
+                    source = user.get("source", "organic")
+                    influencer = source.split("_", 1)[1] if "_" in source else None
+                    if influencer:
+                        tracker.setdefault(influencer, {"joins": 0, "subs": 0, "revenue": 0.0})
+                        tracker[influencer]["subs"] += 1
+                        tracker[influencer]["revenue"] += PRICE_USDT
+
+                    await update.message.reply_text("*Payment confirmed!* Premium active.", parse_mode="MarkdownV2")
+                    return
+    except Exception as e:
+        log.error(f"Pay error: {e}")
+    await update.message.reply_text("Invalid TXID.")
+
+async def stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not ctx.args:
+        await update.message.reply_text("Usage: `/stats <username>`", parse_mode="MarkdownV2")
+        return
+    inf = ctx.args[0].lower()
+    if inf not in tracker:
+        await update.message.reply_text("No data.", parse_mode="MarkdownV2")
+        return
+    s = tracker[inf]
+    await update.message.reply_text(
+        f"*{escape_markdown(inf.upper(), version=2)}*\nJoins: `{s['joins']}`\nSubs: `{s['subs']}`\nRevenue: `${s['revenue']:.2f}`",
+        parse_mode="MarkdownV2"
+    )
+
+async def owner(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    await update.message.reply_text("Owner panel active.")
+
+async def reset_user(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    target = update.effective_user.id if not ctx.args else int(ctx.args[0])
+    users.pop(target, None)
+    await update.message.reply_text(f"Reset user {target}")
+
+async def settings(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    if uid not in users:
+        users[uid] = {"free": FREE_ALERTS, "chat_id": update.effective_chat.id, "filters": {"levels": ["min","medium","max"], "chains": ["SOL","BSC","PUMP"]}}
+    users[uid]["chat_id"] = update.effective_chat.id
+    f = users[uid]["filters"]
+    await update.message.reply_text(
+        "*Your Alert Filters*\n\nCustomize what you receive:",
+        reply_markup=build_settings_kb(f),
+        parse_mode="MarkdownV2"
+    )
+
+async def button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    uid = query.from_user.id
+    if uid not in users:
+        return
+    f = users[uid]["filters"]
+    data = query.data
+
+    if data.startswith("toggle_"):
+        key = data[7:]
+        if key == "pump":
+            lst = f["chains"]
+            item = "PUMP"
+        else:
+            lst = f["levels"] if key in ["min","medium","max"] else f["chains"] if key in ["sol","bsc"] else None
+            item = key if key in ["min","medium","max"] else key.upper()
+        if lst:
+            if item in lst:
+                lst.remove(item)
+            else:
+                lst.append(item)
+        await query.edit_message_reply_markup(reply_markup=build_settings_kb(f))
+    elif data == "save_settings":
+        await query.edit_message_text("Settings saved!")
+        await query.message.reply_text("Your filters are now active.")
 
 # --------------------------------------------------------------------------- #
-#                             PUMP SCANNER (FIXED)                           #
+#                             PUMP SCANNER (LIVE)                             #
 # --------------------------------------------------------------------------- #
 async def pump_scanner(app: Application):
     async with aiohttp.ClientSession() as sess:
@@ -319,19 +417,16 @@ async def pump_scanner(app: Application):
                             liq = fdv * 0.1
                             is_new = data.get("age_seconds", 0) < 1800
 
-                            log.info(f"PUMP NEW → {sym} | CA: {addr[:8]}... | Vol: ${vol:,.0f} | FDV: ${fdv:,.0f}")
+                            log.info(f"PUMP NEW → {sym} | CA: {addr[:8]}... | Vol: ${vol:,.0f}")
 
-                            # Safety
                             safe = await is_safe_batch([addr], "PUMP", sess)
                             if not safe.get(addr, False):
                                 continue
 
-                            # Level
                             level = get_alert_level(liq, fdv, vol, is_new, False, False, "PUMP")
                             if not level:
                                 continue
 
-                            # Send
                             msg = format_alert("PUMP", sym, addr, liq, fdv, vol, addr, level)
                             sent = 0
                             for uid, u in list(users.items()):
@@ -354,7 +449,6 @@ async def pump_scanner(app: Application):
                             seen[addr] = time.time()
 
                         except asyncio.TimeoutError:
-                            log.info("PUMP SCANNER: No new tokens (timeout)")
                             break
                         except Exception as e:
                             log.error(f"PUMP WS error: {e}")
@@ -366,7 +460,7 @@ async def pump_scanner(app: Application):
                 await asyncio.sleep(30)
 
 # --------------------------------------------------------------------------- #
-#                             DEX SCANNER (NOW WORKS)                           #
+#                             DEX SCANNER (LIVE)                              #
 # --------------------------------------------------------------------------- #
 async def dex_scanner(app: Application):
     async with aiohttp.ClientSession() as sess:
@@ -505,3 +599,6 @@ async def main():
         await app.shutdown()
         async with save_lock:
             save_data(data)
+
+if __name__ == "__main__":
+    asyncio.run(main())
