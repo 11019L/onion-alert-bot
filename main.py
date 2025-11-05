@@ -196,8 +196,9 @@ async def detect_large_buy(addr, chain):
     return False
 
 def get_alert_level(liq, fdv, vol, new, spike, buy, chain="SOL"):
-    if chain == "PUMP":
-        if vol >= 200 and fdv >= 5000:
+   if chain == "PUMP":
+    if vol >= 100 and fdv >= 3000:  # LOWERED for testing
+        return "min"
             return "min"
         if liq >= 15000 and fdv >= 40000 and vol >= 1500:
             return "medium"
