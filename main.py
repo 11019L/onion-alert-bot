@@ -467,21 +467,27 @@ async def dex_scanner(app: Application):
         while True:
             try:
                 candidates = []
-                for chain, slug in [("SOL","solana"), ("BSC","bsc")]:
+                for chain, slug in [("SOL", "solana"), ("BSC", "bsc")]:
                     try:
-                        async with sess.get(NEW_PAIRS_URL.format(chain=slug), timeout=10) as r:
+                        url = NEW_PAIRS_URL.format(chain=slug)
+                        async with sess.get(url, timeout=15) as r:
                             if r.status == 200:
-                                pairs = (await r.json()).get("pairs", [])[:50]
-                                log.info(f"DEX: {len(pairs)} new pairs on {chain}")
+                                data = await r.json()
+                                pairs = data.get("pairs", [])[:50]
+                                log.info(f"DEX: Fetched {len(pairs)} new pairs on {chain}")
                                 for p in pairs:
                                     candidates.append((p, chain, slug, True, p.get("pairAddress")))
+                            else:
+                                log.warning(f"DEX: HTTP {r.status} for {url}")
                     except Exception as e:
-                        log.warning(f"DEX new-pairs error {chain}: {e}")
+                        log.error(f"DEX fetch error {chain}: {e}")
 
                 if not candidates:
+                    log.info("DEX: No new pairs found this cycle")
                     await asyncio.sleep(60)
                     continue
 
+                # Filter seen
                 addr_to_pair = {}
                 for p, chain, slug, is_new_pair, pair_addr in candidates:
                     base = p.get("baseToken", {})
@@ -491,9 +497,13 @@ async def dex_scanner(app: Application):
                     addr_to_pair[addr] = (p, chain, slug, is_new_pair, pair_addr)
 
                 if not addr_to_pair:
+                    log.info("DEX: All pairs already seen")
                     await asyncio.sleep(60)
                     continue
 
+                log.info(f"DEX: Processing {len(addr_to_pair)} new candidates")
+
+                # Safety check
                 per_chain = defaultdict(list)
                 for addr, (_, chain, _, _, _) in addr_to_pair.items():
                     per_chain[chain].append(addr)
@@ -501,6 +511,7 @@ async def dex_scanner(app: Application):
                 for chain, addrs in per_chain.items():
                     safety.update(await is_safe_batch(addrs, chain, sess))
 
+                # Process alerts
                 alerts = []
                 for addr, (p, chain, slug, is_new_pair, pair_addr) in addr_to_pair.items():
                     if not safety.get(addr, False):
@@ -510,6 +521,7 @@ async def dex_scanner(app: Application):
                     liq = p.get("liquidity", {}).get("usd", 0) or 0
                     fdv = p.get("fdv", 0) or 0
                     vol = p.get("volume", {}).get("m5", 0) or 0
+
                     h = vol_hist[addr]
                     h.append(vol)
                     spike = vol / (sum(h) / len(h)) if len(h) > 1 else 1.0
@@ -536,6 +548,7 @@ async def dex_scanner(app: Application):
                     msg = format_alert(chain, sym, addr, liq, fdv, vol, pair_addr, level)
                     alerts.append((msg, addr, level, chain))
 
+                # Send alerts
                 for msg, addr, level, chain in alerts:
                     sent = 0
                     for uid, u in list(users.items()):
@@ -555,11 +568,12 @@ async def dex_scanner(app: Application):
                             sent += 1
                         except Exception as e:
                             log.warning(f"Send failed: {e}")
-                    log.info(f"DEX {level.upper()} → {addr} | Sent to {sent}")
+                    log.info(f"DEX {level.upper()} → {addr} | Sent to {sent} users")
 
                 await asyncio.sleep(60)
+
             except Exception as e:
-                log.error(f"DEX SCANNER ERROR: {e}")
+                log.error(f"DEX SCANNER CRASH: {e}")
                 await asyncio.sleep(60)
 
 # --------------------------------------------------------------------------- #
