@@ -488,7 +488,6 @@ async def dex_scanner(app: Application):
                 log.info("DEX SCANNER: Starting Birdeye cycle (no API key needed)...")
                 candidates = []
 
-                # Loop through Solana and BSC
                 for chain in ["solana", "bsc"]:
                     url = f"https://public-api.birdeye.so/defi/v2.0/new_pairs?chain={chain}"
                     try:
@@ -524,7 +523,6 @@ async def dex_scanner(app: Application):
                     await asyncio.sleep(60)
                     continue
 
-                # === YOUR EXISTING LOGIC BELOW ===
                 addr_to_pair = {}
                 for p, chain, slug, is_new_pair, pair_addr in candidates:
                     base = p.get("baseToken", {})
