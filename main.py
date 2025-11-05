@@ -39,7 +39,7 @@ SOLANA_RPC = "https://api.mainnet-beta.solana.com"
 BSCSCAN_API = "https://api.bscscan.com/api"
 
 # OFFICIAL PUMP.FUN WEBSOCKET
-PUMP_WS_URL = "wss://pump-api.fun/ws"
+PUMP_WS_URL = "wss://pump.fun/api/data"
 
 # RAILWAY
 DATA_FILE = Path("/tmp/data.json")
@@ -397,14 +397,16 @@ async def pump_scanner(app: Application):
     async with aiohttp.ClientSession() as sess:
         while True:
             try:
-                log.info("PUMP SCANNER: Connecting to wss://pump.fun/ws")
+                log.info("PUMP SCANNER: Connecting to wss://pump.fun/api/data")
                 async with websockets.connect(PUMP_WS_URL) as ws:
                     log.info("PUMP SCANNER: WebSocket CONNECTED")
+                    # Subscribe to new tokens
+                    await ws.send(json.dumps({"method": "subscribeNewToken"}))
                     while True:
                         try:
                             event = await asyncio.wait_for(ws.recv(), timeout=30)
                             data = json.loads(event)
-                            if data.get("type") != "new" or not data.get("mint"):
+                            if not data.get("mint"):
                                 continue
 
                             addr = data["mint"]
@@ -412,10 +414,10 @@ async def pump_scanner(app: Application):
                                 continue
 
                             sym = data.get("symbol", "???")[:20]
-                            vol = data.get("volume_5m", 0)
-                            fdv = data.get("market_cap", 0)
+                            vol = data.get("volumeUSD", 0)
+                            fdv = data.get("marketCapUSD", 0)
                             liq = fdv * 0.1
-                            is_new = data.get("age_seconds", 0) < 1800
+                            is_new = True  # All from this WS are new
 
                             log.info(f"PUMP NEW → {sym} | CA: {addr[:8]}... | Vol: ${vol:,.0f}")
 
