@@ -69,38 +69,36 @@ def load_data():
                     "premium_only": False
                 })
             return {
-                "tracker": raw.get("tracker", {}),
-                "users": users_raw,
-                "seen": seen,
-                "last_alerted": last_alerted,
-                "token_state": {},
-            }
+    "tracker": raw.get("tracker", {}),
+    "users": users_raw,
+    "seen": {},  # Always start clean
+    "last_alerted": {},
+    "token_state": {},
+}
         except Exception as e:
             log.error(f"Load error: {e}")
     return {"tracker": {}, "users": {}, "seen": {}, "last_alerted": {}, "token_state": {}}
 
 def save_data(data):
     try:
+        # Clean dicts with non-string keys
+        clean_seen = {str(k): v for k, v in data["seen"].items() if k is not None}
+        clean_last = {str(k): v for k, v in data["last_alerted"].items() if k is not None}
+        clean_token_state = {}
+        for k, v in data["token_state"].items():
+            if k is not None:
+                clean_token_state[str(k)] = v
+
         DATA_FILE.write_text(json.dumps({
             "tracker": data["tracker"],
             "users": data["users"],
-            "seen": data["seen"],
-            "last_alerted": data["last_alerted"],
-            "token_state": data["token_state"],
+            "seen": clean_seen,
+            "last_alerted": clean_last,
+            "token_state": clean_token_state,
         }, indent=2))
+        log.info("Data saved successfully")
     except Exception as e:
         log.error(f"Save error: {e}")
-
-data = load_data()
-tracker = data["tracker"]
-users = data["users"]
-seen = data["seen"]
-last_alerted = data["last_alerted"]
-token_state = data["token_state"]
-
-vol_hist = defaultdict(lambda: deque(maxlen=5))
-goplus_cache = {}
-save_lock = asyncio.Lock()
 
 # --------------------------------------------------------------------------- #
 #                               AUTO SAVE                                   #
@@ -423,9 +421,9 @@ async def pump_scanner(app: Application):
 
                 for token in tokens:
                     try:
-                        addr = token["mint"]
-                        if addr in seen:
-                            continue
+                       addr = token.get("mint")
+if not addr or addr == "null" or addr in seen:
+    continue
 
                         sym = token.get("symbol", "???")[:20]
                         vol = token.get("volumeUSD", 0)
@@ -485,6 +483,7 @@ async def dex_scanner(app: Application):
     async with aiohttp.ClientSession() as sess:
         while True:
             try:
+                log.info("DEX SCANNER: Starting cycle...")
                 candidates = []
                 for chain, slug in [("SOL", "solana"), ("BSC", "bsc")]:
                     try:
@@ -502,7 +501,7 @@ async def dex_scanner(app: Application):
                         log.error(f"DEX fetch error {chain}: {e}")
 
                 if not candidates:
-                    log.info("DEX: No new pairs found this cycle")
+                    log.info("DEX: No new pairs this cycle")
                     await asyncio.sleep(60)
                     continue
 
@@ -515,20 +514,22 @@ async def dex_scanner(app: Application):
                         continue
                     addr_to_pair[addr] = (p, chain, slug, is_new_pair, pair_addr)
 
+                log.info(f"DEX: {len(addr_to_pair)} new candidates after seen filter")
+
                 if not addr_to_pair:
-                    log.info("DEX: All pairs already seen")
                     await asyncio.sleep(60)
                     continue
 
-                log.info(f"DEX: Processing {len(addr_to_pair)} new candidates")
-
-                # Safety check
+                # Safety
                 per_chain = defaultdict(list)
                 for addr, (_, chain, _, _, _) in addr_to_pair.items():
                     per_chain[chain].append(addr)
                 safety = {}
                 for chain, addrs in per_chain.items():
                     safety.update(await is_safe_batch(addrs, chain, sess))
+
+                safe_count = sum(1 for v in safety.values() if v)
+                log.info(f"DEX: {safe_count}/{len(safety)} passed safety check")
 
                 # Process alerts
                 alerts = []
@@ -567,7 +568,7 @@ async def dex_scanner(app: Application):
                     msg = format_alert(chain, sym, addr, liq, fdv, vol, pair_addr, level)
                     alerts.append((msg, addr, level, chain))
 
-                # Send alerts
+                # Send
                 for msg, addr, level, chain in alerts:
                     sent = 0
                     for uid, u in list(users.items()):
@@ -587,7 +588,7 @@ async def dex_scanner(app: Application):
                             sent += 1
                         except Exception as e:
                             log.warning(f"Send failed: {e}")
-                    log.info(f"DEX {level.upper()} → {addr} | Sent to {sent} users")
+                    log.info(f"DEX {level.upper()} → {addr} | Sent to {sent}")
 
                 await asyncio.sleep(60)
 
