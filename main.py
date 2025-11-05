@@ -503,7 +503,6 @@ async def dex_scanner(app: Application):
                                     if not addr:
                                         continue
 
-                                    # Build fake DexScreener-style pair for your existing logic
                                     fake_pair = {
                                         "baseToken": {
                                             "address": addr,
@@ -525,7 +524,7 @@ async def dex_scanner(app: Application):
                     await asyncio.sleep(60)
                     continue
 
-                # === YOUR EXISTING LOGIC BELOW (DO NOT CHANGE) ===
+                # === YOUR EXISTING LOGIC BELOW ===
                 addr_to_pair = {}
                 for p, chain, slug, is_new_pair, pair_addr in candidates:
                     base = p.get("baseToken", {})
