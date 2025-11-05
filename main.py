@@ -505,6 +505,3 @@ async def main():
         await app.shutdown()
         async with save_lock:
             save_data(data)
-
-if __name__ == "__main__":
-    asyncio.run(main())
