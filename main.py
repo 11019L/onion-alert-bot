@@ -10,7 +10,6 @@ from pathlib import Path
 
 import aiohttp
 import requests
-import websockets
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
