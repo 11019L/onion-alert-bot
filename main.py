@@ -423,18 +423,21 @@ async def pump_scanner(app: Application):
                 log.info(f"Moralis: Fetched {len(tokens)} new Pump.fun tokens")
 
                 for token in tokens:
-                    try:
-                        addr = token.get("mint")
-                        if not addr or addr in ["null", "None", ""] or addr in seen:
-                            continue
+    try:
+        addr = token.get("tokenAddress") or token.get("mint")
+        if not addr or addr in ["null", "None", ""] or addr in seen:
+            log.debug(f"Skipped: {token.get('symbol')} | addr={addr}")
+            continue
 
-                        sym = token.get("symbol", "???")[:20]
-                        vol = token.get("volumeUSD", 0)
-                        fdv = token.get("marketCapUSD", 0)
-                        liq = fdv * 0.1 if fdv > 0 else 0
-                        is_new = True
+        sym = token.get("symbol", "???")[:20]
+        vol = token.get("volumeUSD", 0)
+        fdv = token.get("marketCapUSD", 0)
+        liq = fdv * 0.1 if fdv > 0 else 0
+        is_new = True
 
-                        log.info(f"PUMP NEW → {sym} | CA: {addr[:8]}... | Vol: ${vol:,.0f}")
+        log.info(f"PUMP NEW → {sym} | CA: {addr[:8]}... | Vol: ${vol:,.0f}")
+
+        # ... rest of logic (safety, level, send)
 
                         safe = await is_safe_batch([addr], "PUMP", sess)
                         if not safe.get(addr, False):
@@ -482,28 +485,47 @@ async def dex_scanner(app: Application):
     async with aiohttp.ClientSession() as sess:
         while True:
             try:
-                log.info("DEX SCANNER: Starting cycle...")
+                log.info("DEX SCANNER: Starting Birdeye cycle (no API key needed)...")
                 candidates = []
-                for chain, slug in [("SOL", "solana"), ("BSC", "bsc")]:
+
+                # Loop through Solana and BSC
+                for chain in ["solana", "bsc"]:
+                    url = f"https://public-api.birdeye.so/defi/v2.0/new_pairs?chain={chain}"
                     try:
-                        url = NEW_PAIRS_URL.format(chain=slug)
                         async with sess.get(url, timeout=15) as r:
                             if r.status == 200:
                                 data = await r.json()
-                                pairs = data.get("pairs", [])[:50]
-                                log.info(f"DEX: Fetched {len(pairs)} new pairs on {chain}")
+                                pairs = data.get("data", {}).get("pairs", [])[:50]
+                                log.info(f"BIRDEYE: Fetched {len(pairs)} new pairs on {chain.upper()}")
+
                                 for p in pairs:
-                                    candidates.append((p, chain, slug, True, p.get("pairAddress")))
+                                    addr = p.get("baseToken", {}).get("address")
+                                    if not addr:
+                                        continue
+
+                                    # Build fake DexScreener-style pair for your existing logic
+                                    fake_pair = {
+                                        "baseToken": {
+                                            "address": addr,
+                                            "symbol": p.get("baseToken", {}).get("symbol", "???")
+                                        },
+                                        "liquidity": {"usd": p.get("liquidity", 0)},
+                                        "fdv": p.get("fdv", 0),
+                                        "volume": {"m5": p.get("volume", {}).get("h5", 0)},
+                                        "pairAddress": p.get("pairAddress", addr)
+                                    }
+                                    candidates.append((fake_pair, chain.upper(), chain, True, p.get("pairAddress")))
                             else:
-                                log.warning(f"DEX: HTTP {r.status} for {url}")
+                                log.warning(f"BIRDEYE: HTTP {r.status} for {url}")
                     except Exception as e:
-                        log.error(f"DEX fetch error {chain}: {e}")
+                        log.error(f"BIRDEYE fetch error {chain}: {e}")
 
                 if not candidates:
-                    log.info("DEX: No new pairs this cycle")
+                    log.info("BIRDEYE: No new pairs this cycle")
                     await asyncio.sleep(60)
                     continue
 
+                # === YOUR EXISTING LOGIC BELOW (DO NOT CHANGE) ===
                 addr_to_pair = {}
                 for p, chain, slug, is_new_pair, pair_addr in candidates:
                     base = p.get("baseToken", {})
@@ -512,8 +534,7 @@ async def dex_scanner(app: Application):
                         continue
                     addr_to_pair[addr] = (p, chain, slug, is_new_pair, pair_addr)
 
-                log.info(f"DEX: {len(addr_to_pair)} new candidates after seen filter")
-
+                log.info(f"BIRDEYE: {len(addr_to_pair)} new candidates after seen filter")
                 if not addr_to_pair:
                     await asyncio.sleep(60)
                     continue
@@ -526,7 +547,7 @@ async def dex_scanner(app: Application):
                     safety.update(await is_safe_batch(addrs, chain, sess))
 
                 safe_count = sum(1 for v in safety.values() if v)
-                log.info(f"DEX: {safe_count}/{len(safety)} passed safety check")
+                log.info(f"BIRDEYE: {safe_count}/{len(safety)} passed safety check")
 
                 alerts = []
                 for addr, (p, chain, slug, is_new_pair, pair_addr) in addr_to_pair.items():
@@ -583,7 +604,7 @@ async def dex_scanner(app: Application):
                             sent += 1
                         except Exception as e:
                             log.warning(f"Send failed: {e}")
-                    log.info(f"DEX {level.upper()} → {addr} | Sent to {sent}")
+                    log.info(f"BIRDEYE {level.upper()} → {addr} | Sent to {sent}")
 
                 await asyncio.sleep(60)
 
