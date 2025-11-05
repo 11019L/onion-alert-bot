@@ -33,14 +33,15 @@ WALLETS = {"BSC": os.getenv("WALLET_BSC", "0xa11351776d6f483418b73c8e40bc706c93e
 
 GOPLUS_API = "https://api.gopluslabs.io/api/v1/token_security/{chain_id}?contract_addresses={addrs}"
 NEW_PAIRS_URL = "https://api.dexscreener.com/latest/dex/new-pairs/{chain}"
-SEARCH_URL = "https://api.dexscreener.com/latest/dex/search?q={chain}"
 SOLANA_RPC = "https://api.mainnet-beta.solana.com"
 BSCSCAN_API = "https://api.bscscan.com/api"
 
 # RAILWAY
 DATA_FILE = Path("/tmp/data.json")
 SAVE_INTERVAL = 30
-MORALIS_API_KEY = os.getenv("MORALIS_API_KEY")  # ADD THIS IN RAILWAY ENV
+MORALIS_API_KEY = os.getenv("MORALIS_API_KEY")
+if not MORALIS_API_KEY:
+    raise RuntimeError("MORALIS_API_KEY is required")
 MORALIS_NEW_URL = "https://solana-gateway.moralis.io/token/mainnet/exchange/pumpfun/new"
 
 # --------------------------------------------------------------------------- #
@@ -56,9 +57,6 @@ def load_data():
     if DATA_FILE.is_file():
         try:
             raw = json.loads(DATA_FILE.read_text())
-            now = time.time()
-            seen = {}  # CLEARED ON STARTUP
-            last_alerted = {}
             users_raw = raw.get("users", {})
             for u in users_raw.values():
                 u.setdefault("test_sent", False)
@@ -69,19 +67,18 @@ def load_data():
                     "premium_only": False
                 })
             return {
-    "tracker": raw.get("tracker", {}),
-    "users": users_raw,
-    "seen": {},  # Always start clean
-    "last_alerted": {},
-    "token_state": {},
-}
+                "tracker": raw.get("tracker", {}),
+                "users": users_raw,
+                "seen": {},           # Always clean
+                "last_alerted": {},
+                "token_state": {},
+            }
         except Exception as e:
             log.error(f"Load error: {e}")
     return {"tracker": {}, "users": {}, "seen": {}, "last_alerted": {}, "token_state": {}}
 
 def save_data(data):
     try:
-        # Clean dicts with non-string keys
         clean_seen = {str(k): v for k, v in data["seen"].items() if k is not None}
         clean_last = {str(k): v for k, v in data["last_alerted"].items() if k is not None}
         clean_token_state = {}
@@ -96,9 +93,19 @@ def save_data(data):
             "last_alerted": clean_last,
             "token_state": clean_token_state,
         }, indent=2))
-        log.info("Data saved successfully")
     except Exception as e:
         log.error(f"Save error: {e}")
+
+data = load_data()
+tracker = data["tracker"]
+users = data["users"]
+seen = data["seen"]
+last_alerted = data["last_alerted"]
+token_state = data["token_state"]
+
+vol_hist = defaultdict(lambda: deque(maxlen=5))
+goplus_cache = {}
+save_lock = asyncio.Lock()  # FIXED: WAS MISSING
 
 # --------------------------------------------------------------------------- #
 #                               AUTO SAVE                                   #
@@ -306,7 +313,6 @@ async def pay(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     users[uid]["paid_until"] = (datetime.utcnow() + timedelta(days=30)).isoformat()
                     users[uid]["free"] = 0
 
-                    # INFLUENCER REVENUE TRACKING
                     user = users[uid]
                     source = user.get("source", "organic")
                     influencer = source.split("_", 1)[1] if "_" in source else None
@@ -390,10 +396,7 @@ async def button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 #                             PUMP SCANNER (LIVE)                             #
 # --------------------------------------------------------------------------- #
 async def pump_scanner(app: Application):
-    headers = {
-        "accept": "application/json",
-        "X-API-Key": MORALIS_API_KEY
-    }
+    headers = {"accept": "application/json", "X-API-Key": MORALIS_API_KEY}
     cursor = None
     log.info("PUMP SCANNER: Starting Moralis Pump.fun polling (REAL-TIME)")
 
@@ -422,7 +425,7 @@ async def pump_scanner(app: Application):
                 for token in tokens:
                     try:
                         addr = token.get("mint")
-                        if not addr or addr == "null" or addr in seen:
+                        if not addr or addr in ["null", "None", ""] or addr in seen:
                             continue
 
                         sym = token.get("symbol", "???")[:20]
@@ -431,19 +434,16 @@ async def pump_scanner(app: Application):
                         liq = fdv * 0.1 if fdv > 0 else 0
                         is_new = True
 
-                        log.info(f"PUMP NEW → {sym} | CA: {addr[:8]}... | Vol: ${vol:,.0f} | FDV: ${fdv:,.0f}")
+                        log.info(f"PUMP NEW → {sym} | CA: {addr[:8]}... | Vol: ${vol:,.0f}")
 
-                        # Safety check
                         safe = await is_safe_batch([addr], "PUMP", sess)
                         if not safe.get(addr, False):
                             continue
 
-                        # Alert level
                         level = get_alert_level(liq, fdv, vol, is_new, False, False, "PUMP")
                         if not level:
                             continue
 
-                        # Send alert
                         msg = format_alert("PUMP", sym, addr, liq, fdv, vol, addr, level)
                         sent = 0
                         for uid, u in list(users.items()):
@@ -468,7 +468,6 @@ async def pump_scanner(app: Application):
                     except Exception as e:
                         log.error(f"Token process error: {e}")
 
-                # Pagination
                 cursor = data.get("cursor")
                 await asyncio.sleep(8)
 
@@ -505,7 +504,6 @@ async def dex_scanner(app: Application):
                     await asyncio.sleep(60)
                     continue
 
-                # Filter seen
                 addr_to_pair = {}
                 for p, chain, slug, is_new_pair, pair_addr in candidates:
                     base = p.get("baseToken", {})
@@ -520,7 +518,6 @@ async def dex_scanner(app: Application):
                     await asyncio.sleep(60)
                     continue
 
-                # Safety
                 per_chain = defaultdict(list)
                 for addr, (_, chain, _, _, _) in addr_to_pair.items():
                     per_chain[chain].append(addr)
@@ -531,7 +528,6 @@ async def dex_scanner(app: Application):
                 safe_count = sum(1 for v in safety.values() if v)
                 log.info(f"DEX: {safe_count}/{len(safety)} passed safety check")
 
-                # Process alerts
                 alerts = []
                 for addr, (p, chain, slug, is_new_pair, pair_addr) in addr_to_pair.items():
                     if not safety.get(addr, False):
@@ -568,7 +564,6 @@ async def dex_scanner(app: Application):
                     msg = format_alert(chain, sym, addr, liq, fdv, vol, pair_addr, level)
                     alerts.append((msg, addr, level, chain))
 
-                # Send
                 for msg, addr, level, chain in alerts:
                     sent = 0
                     for uid, u in list(users.items()):
