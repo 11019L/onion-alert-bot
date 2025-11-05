@@ -38,9 +38,6 @@ SEARCH_URL = "https://api.dexscreener.com/latest/dex/search?q={chain}"
 SOLANA_RPC = "https://api.mainnet-beta.solana.com"
 BSCSCAN_API = "https://api.bscscan.com/api"
 
-# OFFICIAL PUMP.FUN WEBSOCKET
-PUMP_WS_URL = "wss://pumpportal.fun/api/data"
-
 # RAILWAY
 DATA_FILE = Path("/tmp/data.json")
 SAVE_INTERVAL = 30
@@ -396,70 +393,91 @@ async def button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 #                             PUMP SCANNER (LIVE)                             #
 # --------------------------------------------------------------------------- #
 async def pump_scanner(app: Application):
+    headers = {
+        "accept": "application/json",
+        "X-API-Key": MORALIS_API_KEY
+    }
+    cursor = None
+    log.info("PUMP SCANNER: Starting Moralis Pump.fun polling (REAL-TIME)")
+
     async with aiohttp.ClientSession() as sess:
         while True:
             try:
-                log.info("PUMP SCANNER: Connecting to wss://pumpportal.fun/api/data")
-                async with websockets.connect(PUMP_WS_URL) as ws:
-                    log.info("PUMP SCANNER: WebSocket CONNECTED (pumpportal)")
-                    while True:
-                        try:
-                            event = await asyncio.wait_for(ws.recv(), timeout=30)
-                            data = json.loads(event)
-                            if not data.get("mint"):
+                params = {"limit": 20}
+                if cursor:
+                    params["cursor"] = cursor
+
+                async with sess.get(MORALIS_NEW_URL, headers=headers, params=params, timeout=15) as resp:
+                    if resp.status != 200:
+                        log.warning(f"Moralis API error: {resp.status}")
+                        await asyncio.sleep(10)
+                        continue
+                    data = await resp.json()
+
+                tokens = data.get("result", [])
+                if not tokens:
+                    log.info("Moralis: No new tokens this cycle")
+                    await asyncio.sleep(10)
+                    continue
+
+                log.info(f"Moralis: Fetched {len(tokens)} new Pump.fun tokens")
+
+                for token in tokens:
+                    try:
+                        addr = token["mint"]
+                        if addr in seen:
+                            continue
+
+                        sym = token.get("symbol", "???")[:20]
+                        vol = token.get("volumeUSD", 0)
+                        fdv = token.get("marketCapUSD", 0)
+                        liq = fdv * 0.1 if fdv > 0 else 0
+                        is_new = True
+
+                        log.info(f"PUMP NEW → {sym} | CA: {addr[:8]}... | Vol: ${vol:,.0f} | FDV: ${fdv:,.0f}")
+
+                        # Safety check
+                        safe = await is_safe_batch([addr], "PUMP", sess)
+                        if not safe.get(addr, False):
+                            continue
+
+                        # Alert level
+                        level = get_alert_level(liq, fdv, vol, is_new, False, False, "PUMP")
+                        if not level:
+                            continue
+
+                        # Send alert
+                        msg = format_alert("PUMP", sym, addr, liq, fdv, vol, addr, level)
+                        sent = 0
+                        for uid, u in list(users.items()):
+                            if "chat_id" not in u or not u["chat_id"]:
                                 continue
-
-                            addr = data["mint"]
-                            if addr in seen:
+                            chat_id = u["chat_id"]
+                            if u["free"] <= 0 and not u.get("paid"):
                                 continue
-
-                            sym = data.get("symbol", "???")[:20]
-                            vol = data.get("volumeUSD", 0)
-                            fdv = data.get("marketCapUSD", 0)
-                            liq = fdv * 0.1 if fdv > 0 else 0
-                            is_new = True
-
-                            log.info(f"PUMP NEW → {sym} | CA: {addr[:8]}... | Vol: ${vol:,.0f}")
-
-                            safe = await is_safe_batch([addr], "PUMP", sess)
-                            if not safe.get(addr, False):
+                            f = u.get("filters", {})
+                            if level not in f.get("levels", []) or "PUMP" not in f.get("chains", []):
                                 continue
+                            try:
+                                await app.bot.send_message(chat_id, msg, parse_mode="MarkdownV2", disable_web_page_preview=True)
+                                if u["free"] > 0 and level not in ["large_buy", "upgrade"]:
+                                    u["free"] -= 1
+                                sent += 1
+                            except:
+                                pass
+                        log.info(f"PUMP {level.upper()} → {addr} | Sent to {sent}")
+                        seen[addr] = time.time()
 
-                            level = get_alert_level(liq, fdv, vol, is_new, False, False, "PUMP")
-                            if not level:
-                                continue
+                    except Exception as e:
+                        log.error(f"Token process error: {e}")
 
-                            msg = format_alert("PUMP", sym, addr, liq, fdv, vol, addr, level)
-                            sent = 0
-                            for uid, u in list(users.items()):
-                                if "chat_id" not in u or not u["chat_id"]:
-                                    continue
-                                chat_id = u["chat_id"]
-                                if u["free"] <= 0 and not u.get("paid"):
-                                    continue
-                                f = u.get("filters", {})
-                                if level not in f.get("levels", []) or "PUMP" not in f.get("chains", []):
-                                    continue
-                                try:
-                                    await app.bot.send_message(chat_id, msg, parse_mode="MarkdownV2", disable_web_page_preview=True)
-                                    if u["free"] > 0 and level not in ["large_buy", "upgrade"]:
-                                        u["free"] -= 1
-                                    sent += 1
-                                except:
-                                    pass
-                            log.info(f"PUMP {level.upper()} → {addr} | Sent to {sent}")
-                            seen[addr] = time.time()
+                # Pagination
+                cursor = data.get("cursor")
+                await asyncio.sleep(8)  # Poll every 8s = near real-time
 
-                        except asyncio.TimeoutError:
-                            break
-                        except Exception as e:
-                            log.error(f"PUMP WS error: {e}")
-                            break
-
-                await asyncio.sleep(10)
             except Exception as e:
                 log.error(f"PUMP SCANNER ERROR: {e}")
-                await asyncio.sleep(30)
+                await asyncio.sleep(15)
 
 # --------------------------------------------------------------------------- #
 #                             DEX SCANNER (LIVE)                              #
