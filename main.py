@@ -32,7 +32,6 @@ PRICE_USDT = 19.99
 WALLETS = {"BSC": os.getenv("WALLET_BSC", "0xa11351776d6f483418b73c8e40bc706c93e8b1e1")}
 
 GOPLUS_API = "https://api.gopluslabs.io/api/v1/token_security/{chain_id}?contract_addresses={addrs}"
-NEW_PAIRS_URL = "https://api.dexscreener.com/latest/dex/new-pairs/{chain}"
 SOLANA_RPC = "https://api.mainnet-beta.solana.com"
 BSCSCAN_API = "https://api.bscscan.com/api"
 
@@ -69,7 +68,7 @@ def load_data():
             return {
                 "tracker": raw.get("tracker", {}),
                 "users": users_raw,
-                "seen": {},           # Always clean
+                "seen": {},
                 "last_alerted": {},
                 "token_state": {},
             }
@@ -105,7 +104,7 @@ token_state = data["token_state"]
 
 vol_hist = defaultdict(lambda: deque(maxlen=5))
 goplus_cache = {}
-save_lock = asyncio.Lock()  # FIXED: WAS MISSING
+save_lock = asyncio.Lock()
 
 # --------------------------------------------------------------------------- #
 #                               AUTO SAVE                                   #
@@ -423,21 +422,19 @@ async def pump_scanner(app: Application):
                 log.info(f"Moralis: Fetched {len(tokens)} new Pump.fun tokens")
 
                 for token in tokens:
-    try:
-        addr = token.get("tokenAddress") or token.get("mint")
-        if not addr or addr in ["null", "None", ""] or addr in seen:
-            log.debug(f"Skipped: {token.get('symbol')} | addr={addr}")
-            continue
+                    try:
+                        addr = token.get("tokenAddress") or token.get("mint")
+                        if not addr or str(addr).strip() in ["", "null", "None"] or addr in seen:
+                            log.debug(f"Skipped: {token.get('symbol', '???')} | addr={addr}")
+                            continue
 
-        sym = token.get("symbol", "???")[:20]
-        vol = token.get("volumeUSD", 0)
-        fdv = token.get("marketCapUSD", 0)
-        liq = fdv * 0.1 if fdv > 0 else 0
-        is_new = True
+                        sym = token.get("symbol", "???")[:20]
+                        vol = token.get("volumeUSD", 0)
+                        fdv = token.get("marketCapUSD", 0)
+                        liq = fdv * 0.1 if fdv > 0 else 0
+                        is_new = True
 
-        log.info(f"PUMP NEW → {sym} | CA: {addr[:8]}... | Vol: ${vol:,.0f}")
-
-        # ... rest of logic (safety, level, send)
+                        log.info(f"PUMP NEW → {sym} | CA: {addr[:8]}... | Vol: ${vol:,.0f}")
 
                         safe = await is_safe_batch([addr], "PUMP", sess)
                         if not safe.get(addr, False):
