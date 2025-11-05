@@ -44,6 +44,8 @@ PUMP_WS_URL = "wss://pumpportal.fun/api/data"
 # RAILWAY
 DATA_FILE = Path("/tmp/data.json")
 SAVE_INTERVAL = 30
+MORALIS_API_KEY = os.getenv("MORALIS_API_KEY")  # ADD THIS IN RAILWAY ENV
+MORALIS_NEW_URL = "https://solana-gateway.moralis.io/token/mainnet/exchange/pumpfun/new"
 
 # --------------------------------------------------------------------------- #
 #                                 LOGGING                                   #
