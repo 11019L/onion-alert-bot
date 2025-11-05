@@ -39,7 +39,7 @@ SOLANA_RPC = "https://api.mainnet-beta.solana.com"
 BSCSCAN_API = "https://api.bscscan.com/api"
 
 # OFFICIAL PUMP.FUN WEBSOCKET
-PUMP_WS_URL = "wss://pump.fun/ws"
+PUMP_WS_URL = "wss://pump-api.fun/ws"
 
 # RAILWAY
 DATA_FILE = Path("/tmp/data.json")
