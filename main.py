@@ -42,6 +42,7 @@ MORALIS_API_KEY = os.getenv("MORALIS_API_KEY")
 if not MORALIS_API_KEY:
     raise RuntimeError("MORALIS_API_KEY is required")
 MORALIS_NEW_URL = "https://solana-gateway.moralis.io/token/mainnet/exchange/pumpfun/new"
+MORALIS_TRENDING_URL = "https://solana-gateway.moralis.io/token/mainnet/exchange/pumpfun/trending"
 
 # --------------------------------------------------------------------------- #
 #                                 LOGGING                                   #
@@ -127,11 +128,15 @@ def pump_url(ca):
 def format_alert(chain, sym, addr, liq, fdv, vol, pair, level):
     e = {"min":"Min","medium":"Medium","max":"Max","large_buy":"SNIPE","upgrade":"UPGRADED"}.get(level, level.upper())
     link = pump_url(addr) if chain == "PUMP" else dex_url(chain, pair)
+
+    # FULLY ESCAPED — NO BLACK TEXT
     sym_esc = escape_markdown(sym, version=2)
-    addr_esc = escape_markdown(addr, version=2)
+    addr_esc = escape_markdown(addr[:8] + "..." + addr[-6:], version=2)
     chain_esc = escape_markdown(chain, version=2)
+    level_esc = escape_markdown(e, version=2)
+
     return (
-        f"*{escape_markdown(e, version=2)} ALERT* [{chain_esc}]\n"
+        f"*{level_esc} ALERT* [{chain_esc}]\n"
         f"`{sym_esc}`\n"
         f"*CA:* `{addr_esc}`\n"
         f"Liq: ${liq:,.0f} \\| FDV: ${fdv:,.0f}\n"
@@ -179,8 +184,7 @@ async def detect_large_buy(addr, chain):
             resp = requests.post(SOLANA_RPC, json=payload, timeout=8).json()
             for sig in resp.get("result", [])[:5]:
                 tx = requests.post(SOLANA_RPC, json={
-                    "jsonrpc": "2.0", "id": 1,
-                    "method": "getTransaction",
+                    "jsonrpc": "2.0", "id": 1, "method": "getTransaction",
                     "params": [sig["signature"], {"encoding": "jsonParsed"}]
                 }, timeout=8).json()
                 if tx.get("result"):
@@ -193,7 +197,7 @@ async def detect_large_buy(addr, chain):
 
 def get_alert_level(liq, fdv, vol, new, spike, buy, chain="SOL"):
     if chain == "PUMP":
-        if new and vol >= 200 and fdv >= 5000:
+        if vol >= 200 and fdv >= 5000:
             return "min"
         if liq >= 15000 and fdv >= 40000 and vol >= 1500:
             return "medium"
@@ -392,57 +396,84 @@ async def button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text("Your filters are now active.")
 
 # --------------------------------------------------------------------------- #
-#                             PUMP SCANNER (LIVE)                             #
+#                        NEW PUMP SCANNER (NEW + TRENDING)                   #
 # --------------------------------------------------------------------------- #
 async def pump_scanner(app: Application):
     headers = {"accept": "application/json", "X-API-Key": MORALIS_API_KEY}
-    cursor = None
-    log.info("PUMP SCANNER: Starting Moralis Pump.fun polling (REAL-TIME)")
+    cursor_new = None
+    cursor_trending = None
+    log.info("PUMP SCANNER: Starting Moralis polling (new + trending)")
 
     async with aiohttp.ClientSession() as sess:
         while True:
             try:
-                params = {"limit": 20}
-                if cursor:
-                    params["cursor"] = cursor
+                all_tokens = []
 
-                async with sess.get(MORALIS_NEW_URL, headers=headers, params=params, timeout=15) as resp:
-                    if resp.status != 200:
-                        log.warning(f"Moralis API error: {resp.status}")
-                        await asyncio.sleep(10)
-                        continue
-                    data = await resp.json()
+                # 1. NEW TOKENS
+                try:
+                    params = {"limit": 20}
+                    if cursor_new:
+                        params["cursor"] = cursor_new
+                    async with sess.get(MORALIS_NEW_URL, headers=headers, params=params, timeout=15) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            new_tokens = data.get("result", [])
+                            log.info(f"Moralis NEW: Fetched {len(new_tokens)} new tokens")
+                            all_tokens.extend(new_tokens)
+                            cursor_new = data.get("cursor")
+                except Exception as e:
+                    log.warning(f"Moralis NEW error: {e}")
 
-                tokens = data.get("result", [])
-                if not tokens:
-                    log.info("Moralis: No new tokens this cycle")
+                # 2. TRENDING TOKENS (last 1h)
+                try:
+                    params = {"limit": 20, "timeframe": "1h"}
+                    if cursor_trending:
+                        params["cursor"] = cursor_trending
+                    async with sess.get(MORALIS_TRENDING_URL, headers=headers, params=params, timeout=15) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            trending_tokens = data.get("result", [])
+                            log.info(f"Moralis TRENDING: Fetched {len(trending_tokens)} trending tokens")
+                            all_tokens.extend(trending_tokens)
+                            cursor_trending = data.get("cursor")
+                except Exception as e:
+                    log.warning(f"Moralis TRENDING error: {e}")
+
+                if not all_tokens:
+                    log.info("Moralis: No tokens this cycle")
                     await asyncio.sleep(10)
                     continue
 
-                log.info(f"Moralis: Fetched {len(tokens)} new Pump.fun tokens")
+                log.info(f"Processing {len(all_tokens)} total tokens")
 
-                for token in tokens:
+                for token in all_tokens:
                     try:
                         addr = token.get("tokenAddress") or token.get("mint")
                         if not addr or str(addr).strip() in ["", "null", "None"] or addr in seen:
-                            log.debug(f"Skipped: {token.get('symbol', '???')} | addr={addr}")
                             continue
 
                         sym = token.get("symbol", "???")[:20]
                         vol = token.get("volumeUSD", 0)
                         fdv = token.get("marketCapUSD", 0)
-                        liq = fdv * 0.1 if fdv > 0 else 0
-                        is_new = True
+                        liq = token.get("liquidity", 0) or (fdv * 0.1 if fdv > 0 else 0)
 
-                        log.info(f"PUMP NEW → {sym} | CA: {addr[:8]}... | Vol: ${vol:,.0f}")
+                        log.info(f"PUMP CHECK → {escape_markdown(sym, version=2)} | CA: {addr[:8]}... | Vol: ${vol:,.0f}")
 
                         safe = await is_safe_batch([addr], "PUMP", sess)
                         if not safe.get(addr, False):
                             continue
 
-                        level = get_alert_level(liq, fdv, vol, is_new, False, False, "PUMP")
+                        level = get_alert_level(liq, fdv, vol, True, False, False, "PUMP")
                         if not level:
                             continue
+
+                        state = token_state.get(addr, {"sent_levels": []})
+                        if level in state["sent_levels"]:
+                            continue
+
+                        state["sent_levels"].append(level)
+                        token_state[addr] = state
+                        seen[addr] = time.time()
 
                         msg = format_alert("PUMP", sym, addr, liq, fdv, vol, addr, level)
                         sent = 0
@@ -460,19 +491,17 @@ async def pump_scanner(app: Application):
                                 if u["free"] > 0 and level not in ["large_buy", "upgrade"]:
                                     u["free"] -= 1
                                 sent += 1
-                            except:
-                                pass
+                            except Exception as e:
+                                log.warning(f"Send failed: {e}")
                         log.info(f"PUMP {level.upper()} → {addr} | Sent to {sent}")
-                        seen[addr] = time.time()
 
                     except Exception as e:
-                        log.error(f"Token process error: {e}")
+                        log.error(f"Token error: {e}")
 
-                cursor = data.get("cursor")
                 await asyncio.sleep(8)
 
             except Exception as e:
-                log.error(f"PUMP SCANNER ERROR: {e}")
+                log.error(f"PUMP SCANNER CRASH: {e}")
                 await asyncio.sleep(15)
 
 # --------------------------------------------------------------------------- #
@@ -482,7 +511,7 @@ async def dex_scanner(app: Application):
     async with aiohttp.ClientSession() as sess:
         while True:
             try:
-                log.info("DEX SCANNER: Starting Birdeye cycle (no API key needed)...")
+                log.info("DEX SCANNER: Starting Birdeye cycle...")
                 candidates = []
 
                 for chain in ["solana", "bsc"]:
@@ -528,11 +557,6 @@ async def dex_scanner(app: Application):
                         continue
                     addr_to_pair[addr] = (p, chain, slug, is_new_pair, pair_addr)
 
-                log.info(f"BIRDEYE: {len(addr_to_pair)} new candidates after seen filter")
-                if not addr_to_pair:
-                    await asyncio.sleep(60)
-                    continue
-
                 per_chain = defaultdict(list)
                 for addr, (_, chain, _, _, _) in addr_to_pair.items():
                     per_chain[chain].append(addr)
@@ -541,7 +565,7 @@ async def dex_scanner(app: Application):
                     safety.update(await is_safe_batch(addrs, chain, sess))
 
                 safe_count = sum(1 for v in safety.values() if v)
-                log.info(f"BIRDEYE: {safe_count}/{len(safety)} passed safety check")
+                log.info(f"BIRDEYE: {safe_count}/{len(safety)} passed safety")
 
                 alerts = []
                 for addr, (p, chain, slug, is_new_pair, pair_addr) in addr_to_pair.items():
@@ -626,7 +650,7 @@ async def main():
     app.create_task(pump_scanner(app))
     app.create_task(auto_save())
 
-    log.info("BOT STARTED – SEEN CLEARED – ALERTS COMING")
+    log.info("BOT STARTED – ALERTS COMING")
 
     await app.initialize()
     await app.start()
