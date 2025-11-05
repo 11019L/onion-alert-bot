@@ -395,54 +395,54 @@ async def button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text("Your filters are now active.")
 
 # --------------------------------------------------------------------------- #
-#                        PUMP SCANNER (NEW + TRENDING + FAST)                #
+#                        PUMP SCANNER (ROBUST + FALLBACK)                    #
 # --------------------------------------------------------------------------- #
 async def pump_scanner(app: Application):
     headers = {"accept": "application/json", "X-API-Key": MORALIS_API_KEY}
-    cursor_new = None
-    cursor_trending = None
-    log.info("PUMP SCANNER: Starting (new + trending)")
+    log.info("PUMP SCANNER: Starting (robust + fallback)")
 
     async with aiohttp.ClientSession() as sess:
         while True:
             try:
                 all_tokens = []
+                fetched = False
 
-                # NEW
+                # 1. TRY /new (limit 10)
                 try:
-                    params = {"limit": 30}
-                    if cursor_new:
-                        params["cursor"] = cursor_new
+                    params = {"limit": 10}
                     async with sess.get(MORALIS_NEW_URL, headers=headers, params=params, timeout=15) as resp:
                         if resp.status == 200:
                             data = await resp.json()
                             new_tokens = data.get("result", [])
-                            log.info(f"Moralis NEW: {len(new_tokens)} tokens")
-                            all_tokens.extend(new_tokens)
-                            cursor_new = data.get("cursor")
+                            if new_tokens:
+                                log.info(f"Moralis /new: {len(new_tokens)} tokens")
+                                all_tokens.extend(new_tokens)
+                                fetched = True
                 except Exception as e:
-                    log.warning(f"Moralis NEW error: {e}")
+                    log.warning(f"Moralis /new error: {e}")
 
-                # TRENDING
-                try:
-                    params = {"limit": 30, "timeframe": "5m"}
-                    if cursor_trending:
-                        params["cursor"] = cursor_trending
-                    async with sess.get(MORALIS_TRENDING_URL, headers=headers, params=params, timeout=15) as resp:
-                        if resp.status == 200:
-                            data = await resp.json()
-                            trending_tokens = data.get("result", [])
-                            log.info(f"Moralis TRENDING: {len(trending_tokens)} tokens")
-                            all_tokens.extend(trending_tokens)
-                            cursor_trending = data.get("cursor")
-                except Exception as e:
-                    log.warning(f"Moralis TRENDING error: {e}")
+                # 2. TRY /trending (1h, limit 20) — FALLBACK
+                if not fetched:
+                    try:
+                        params = {"limit": 20, "timeframe": "1h"}
+                        async with sess.get(MORALIS_TRENDING_URL, headers=headers, params=params, timeout=15) as resp:
+                            if resp.status == 200:
+                                data = await resp.json()
+                                trending = data.get("result", [])
+                                if trending:
+                                    log.info(f"Moralis /trending (fallback): {len(trending)} tokens")
+                                    all_tokens.extend(trending)
+                                    fetched = True
+                    except Exception as e:
+                        log.warning(f"Moralis /trending error: {e}")
 
+                # 3. IF STILL EMPTY → LOG BUT CONTINUE
                 if not all_tokens:
-                    log.info("Moralis: No tokens this cycle")
-                    await asyncio.sleep(5)
+                    log.info("Moralis: No tokens this cycle (normal during low activity)")
+                    await asyncio.sleep(10)
                     continue
 
+                # 4. PROCESS TOKENS
                 for token in all_tokens:
                     try:
                         addr = token.get("tokenAddress") or token.get("mint")
@@ -450,9 +450,12 @@ async def pump_scanner(app: Application):
                             continue
 
                         sym = token.get("symbol", "???")[:20]
-                        vol = token.get("volumeUSD", 0)
-                        fdv = token.get("marketCapUSD", 0)
+                        vol = token.get("volumeUSD", 0) or 0
+                        fdv = token.get("marketCapUSD", 0) or 0
                         liq = fdv * 0.1 if fdv > 0 else 0
+
+                        # DEBUG LOG
+                        log.info(f"PUMP SCAN → {sym} | Vol: ${vol:,.0f} | FDV: ${fdv:,.0f}")
 
                         safe = await is_safe_batch([addr], "PUMP", sess)
                         if not safe.get(addr, False):
@@ -493,11 +496,11 @@ async def pump_scanner(app: Application):
                     except Exception as e:
                         log.error(f"Token error: {e}")
 
-                await asyncio.sleep(5)  # FAST POLL
+                await asyncio.sleep(10)
 
             except Exception as e:
                 log.error(f"PUMP SCANNER CRASH: {e}")
-                await asyncio.sleep(10)
+                await asyncio.sleep(15)
 
 # --------------------------------------------------------------------------- #
 #                             DEX SCANNER (WITH API KEY)                      #
