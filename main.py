@@ -207,7 +207,19 @@ def get_alert_level(liq, fdv, vol, new, spike, buy, chain="SOL"):
     if buy and spike:
         return "max"
     return None
-
+async def testalert(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    msg = (
+        f"*MIN ALERT* \\[PUMP\\]\n"
+        f"`FAKE`\n"
+        f"*CA:* `fake1234567890`\n"
+        f"Liq: $600 \\| FDV: $12,000\n"
+        f"5m Vol: $450\n"
+        f"[Pump\\.fun](https://pump\\.fun/fake1234567890)"
+    )
+    await update.message.reply_text(msg, parse_mode="MarkdownV2")
+    await update.message.reply_text("Fake alert sent in chat!")
 # --------------------------------------------------------------------------- #
 #                               FILTERS                                     #
 # --------------------------------------------------------------------------- #
