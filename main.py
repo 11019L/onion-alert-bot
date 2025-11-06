@@ -19,6 +19,9 @@ from telegram.ext import (
 )
 from telegram.helpers import escape_markdown
 
+# --------------------------------------------------------------------------- #
+#                               SAFE SEND                                    #
+# --------------------------------------------------------------------------- #
 async def safe_send(app, chat_id, text):
     try:
         await app.bot.send_message(
@@ -157,7 +160,8 @@ def format_alert(chain, sym, addr, liq, fdv, vol, pair, level):
         addr = addr.get("address", "") or str(addr)
     addr = str(addr) if not isinstance(addr, str) else addr
 
-    # SHORTEN ONLY IF LONG ENOUGH
+    # CLEAN JUNK & ENSURE SLICING WORKS
+    addr = ''.join(c for c in addr if c.isalnum() or c in "+/=")[:64]
     if len(addr) >= 14:
         addr_short = addr[:8] + "..." + addr[-6:]
     else:
@@ -175,6 +179,7 @@ def format_alert(chain, sym, addr, liq, fdv, vol, pair, level):
         f"5m Vol: ${vol:,.0f}\n"
         f"[View]({link})"
     )
+
 # --------------------------------------------------------------------------- #
 #                               RUG / BUY                                   #
 # --------------------------------------------------------------------------- #
@@ -215,7 +220,8 @@ async def detect_large_buy(addr, chain):
             resp = requests.post(SOLANA_RPC, json=payload, timeout=8).json()
             for sig in resp.get("result", [])[:5]:
                 tx = requests.post(SOLANA_RPC, json={
-                    "jsonrpc": "2.0", "id": 1, "method": "getTransaction",
+                    "jsonrpc": "2.0", "id": 1,
+                    "method": "getTransaction",
                     "params": [sig["signature"], {"encoding": "jsonParsed"}]
                 }, timeout=8).json()
                 if tx.get("result"):
@@ -426,11 +432,13 @@ async def button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("Settings saved!")
         await query.message.reply_text("Your filters are now active.")
 
+# --------------------------------------------------------------------------- #
+#                               PUMP SCANNER                                #
+# --------------------------------------------------------------------------- #
 async def pump_scanner(app: Application):
     headers = {"accept": "application/json", "X-API-Key": MORALIS_API_KEY}
     log.info("PUMP SCANNER: Starting (new + volume spikes)")
 
-    # CORRECT INDENTATION — INSIDE FUNCTION
     volume_history = defaultdict(lambda: deque(maxlen=3))
 
     async with aiohttp.ClientSession() as sess:
@@ -468,6 +476,7 @@ async def pump_scanner(app: Application):
                     log.info("Moralis: No tokens this cycle")
                     await asyncio.sleep(10)
                     continue
+
                 # 3. PROCESS ALL TOKENS
                 for token in all_tokens:
                     try:
@@ -478,6 +487,7 @@ async def pump_scanner(app: Application):
                         elif isinstance(addr, dict):
                             addr = addr.get("address", "") or str(addr)
                         addr = str(addr) if not isinstance(addr, str) else addr
+                        addr = ''.join(c for c in addr if c.isalnum() or c in "+/=")[:64]
                         if not addr or len(addr) < 10:
                             continue
 
@@ -667,13 +677,10 @@ async def dex_scanner(app: Application):
                         f = u.get("filters", {"levels": ["min","medium","max"], "chains": ["SOL","BSC","PUMP"]})
                         if level not in f["levels"] or chain not in f["chains"]:
                             continue
-                        try:
-                            await app.bot.send_message(chat_id, msg, parse_mode="MarkdownV2", disable_web_page_preview=True)
-                            if u["free"] > 0 and level not in ["large_buy", "upgrade"]:
-                                u["free"] -= 1
-                            sent += 1
-                        except Exception as e:
-                            log.warning(f"Send failed: {e}")
+                        await safe_send(app, chat_id, msg)
+                        if u["free"] > 0 and level not in ["large_buy", "upgrade"]:
+                            u["free"] -= 1
+                        sent += 1
                     log.info(f"BIRDEYE {level.upper()} → {addr} | Sent to {sent}")
 
                 await asyncio.sleep(60)
