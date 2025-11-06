@@ -145,13 +145,20 @@ def format_alert(chain, sym, addr, liq, fdv, vol, pair, level):
     e = {"min":"Min","medium":"Medium","max":"Max","large_buy":"SNIPE","upgrade":"UPGRADED"}.get(level, level.upper())
     link = pump_url(addr) if chain == "PUMP" else dex_url(chain, pair)
 
-    # FIX 1: SAFE SYMBOL
+    # 1. SAFE SYMBOL
     sym = str(sym) if not isinstance(sym, str) else sym
-    sym_esc = escape_markdown(sym[:20], version=2)
+    sym = sym[:20]
+    sym_esc = escape_markdown(sym, version=2)
 
-    # FIX 2: SAFE ADDRESS
-    addr_str = str(addr) if not isinstance(addr, str) else addr
-    addr_short = addr_str[:8] + "..." + addr_str[-6:] if len(addr_str) >= 14 else addr_str
+    # 2. SAFE ADDRESS — HANDLE LIST/DICT/STR
+    if isinstance(addr, (list, dict)):
+        addr = str(addr)
+    if not isinstance(addr, str):
+        addr = ""
+    if len(addr) >= 14:
+        addr_short = addr[:8] + "..." + addr[-6:]
+    else:
+        addr_short = addr
     addr_esc = escape_markdown(addr_short, version=2)
 
     chain_esc = escape_markdown(chain, version=2)
@@ -460,23 +467,26 @@ async def pump_scanner(app: Application):
                     continue
 
                 # 3. PROCESS ALL TOKENS
-                for token in all_tokens:
-                    try:
-                        addr = token.get("tokenAddress") or token.get("mint") or ""
-                        if not addr:
-                            continue
-                        addr = str(addr)
+               for token in all_tokens:
+    try:
+        addr = token.get("tokenAddress") or token.get("mint") or ""
+        if isinstance(addr, (list, dict)):
+            addr = str(addr)
+        if not addr or not isinstance(addr, str):
+            continue
 
-                        if addr in seen:
-                            continue
+        if addr in seen:
+            continue
 
-                        sym = token.get("symbol", "???")
-                        sym = str(sym) if not isinstance(sym, str) else sym
-                        sym = sym[:20]
+        sym = token.get("symbol", "???")
+        sym = str(sym) if not isinstance(sym, str) else sym
+        sym = sym[:20]
 
-                        vol = float(token.get("volumeUSD", 0) or 0)
-                        fdv = float(token.get("marketCapUSD", 0) or 0)
-                        liq = fdv * 0.1 if fdv > 0 else 0
+        vol = float(token.get("volumeUSD", 0) or 0)
+        fdv = float(token.get("marketCapUSD", 0) or 0)
+        liq = fdv * 0.1 if fdv > 0 else 0
+
+        # [rest of logic unchanged]
 
                         # VOLUME SPIKE
                         prev_vols = volume_history[addr]
