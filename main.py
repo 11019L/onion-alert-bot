@@ -32,7 +32,6 @@ async def safe_send(app, chat_id, text):
         )
     except Exception as e:
         log.warning(f"Send failed (chat {chat_id}): {e}")
-        # Fallback: send plain text
         try:
             await app.bot.send_message(chat_id=chat_id, text=text, disable_web_page_preview=True)
         except:
@@ -148,24 +147,19 @@ def format_alert(chain, sym, addr, liq, fdv, vol, pair, level):
     e = {"min":"Min","medium":"Medium","max":"Max","large_buy":"SNIPE","upgrade":"UPGRADED"}.get(level, level.upper())
     link = pump_url(addr) if chain == "PUMP" else dex_url(chain, pair)
 
-    # 1. SAFE SYMBOL
+    # SAFE SYMBOL
     sym = str(sym) if not isinstance(sym, str) else sym
     sym = sym[:20]
     sym_esc = escape_markdown(sym, version=2)
 
-    # 2. SAFE ADDRESS — EXTRACT STRING FROM LIST/DICT
+    # SAFE ADDRESS — FULLY BULLETPROOF
     if isinstance(addr, list) and addr:
-        addr = addr[0] if isinstance(addr[0], str) else str(addr[0])
+        addr = addr[0]
     elif isinstance(addr, dict):
-        addr = addr.get("address", "") or str(addr)
+        addr = addr.get("address") or addr.get("mint") or ""
     addr = str(addr) if not isinstance(addr, str) else addr
-
-    # CLEAN JUNK & ENSURE SLICING WORKS
     addr = ''.join(c for c in addr if c.isalnum() or c in "+/=")[:64]
-    if len(addr) >= 14:
-        addr_short = addr[:8] + "..." + addr[-6:]
-    else:
-        addr_short = addr
+    addr_short = addr[:8] + "..." + addr[-6:] if len(addr) >= 14 else addr
     addr_esc = escape_markdown(addr_short, version=2)
 
     chain_esc = escape_markdown(chain, version=2)
@@ -446,7 +440,6 @@ async def pump_scanner(app: Application):
             try:
                 all_tokens = []
 
-                # 1. GET NEW TOKENS
                 try:
                     params = {"limit": 20}
                     async with sess.get(MORALIS_NEW_URL, headers=headers, params=params, timeout=15) as resp:
@@ -459,7 +452,6 @@ async def pump_scanner(app: Application):
                 except Exception as e:
                     log.warning(f"Moralis NEW error: {e}")
 
-                # 2. GET TRENDING
                 try:
                     params = {"limit": 30, "timeframe": "5m"}
                     async with sess.get(MORALIS_TRENDING_URL, headers=headers, params=params, timeout=15) as resp:
@@ -477,15 +469,14 @@ async def pump_scanner(app: Application):
                     await asyncio.sleep(10)
                     continue
 
-                # 3. PROCESS ALL TOKENS
                 for token in all_tokens:
                     try:
-                        # === SAFE ADDR EXTRACTION ===
+                        # SAFE ADDR
                         addr = token.get("tokenAddress") or token.get("mint") or ""
                         if isinstance(addr, list) and addr:
-                            addr = addr[0] if isinstance(addr[0], str) else str(addr[0])
+                            addr = addr[0]
                         elif isinstance(addr, dict):
-                            addr = addr.get("address", "") or str(addr)
+                            addr = addr.get("address") or addr.get("mint") or ""
                         addr = str(addr) if not isinstance(addr, str) else addr
                         addr = ''.join(c for c in addr if c.isalnum() or c in "+/=")[:64]
                         if not addr or len(addr) < 10:
@@ -494,17 +485,17 @@ async def pump_scanner(app: Application):
                         if addr in seen:
                             continue
 
-                        # === SAFE SYMBOL ===
+                        # SAFE SYMBOL
                         sym = token.get("symbol", "???")
                         sym = str(sym) if not isinstance(sym, str) else sym
                         sym = sym[:20]
 
-                        # === METRICS ===
+                        # METRICS
                         vol = float(token.get("volumeUSD", 0) or 0)
                         fdv = float(token.get("marketCapUSD", 0) or 0)
                         liq = fdv * 0.1 if fdv > 0 else 0
 
-                        # === VOLUME SPIKE ===
+                        # VOLUME SPIKE
                         prev_vols = volume_history[addr]
                         prev_vols.append(vol)
                         spike = False
@@ -514,7 +505,7 @@ async def pump_scanner(app: Application):
                                 spike = True
                                 log.info(f"SPIKE → {sym} | {avg_prev:,.0f} → {vol:,.0f}")
 
-                        # === LEVEL ===
+                        # LEVEL
                         level = None
                         if vol >= 100 and fdv >= 3000:
                             level = "min"
@@ -526,12 +517,12 @@ async def pump_scanner(app: Application):
                         if not level:
                             continue
 
-                        # === SAFETY ===
+                        # SAFETY
                         safe = await is_safe_batch([addr], "PUMP", sess)
                         if not safe.get(addr, False):
                             continue
 
-                        # === DUPLICATE ===
+                        # DUPLICATE
                         state = token_state.get(addr, {"sent_levels": []})
                         if level in state["sent_levels"]:
                             continue
@@ -539,7 +530,7 @@ async def pump_scanner(app: Application):
                         state["sent_levels"].append(level)
                         token_state[addr] = state
 
-                        # === SEND ===
+                        # SEND
                         msg = format_alert("PUMP", sym, addr, liq, fdv, vol, addr, level)
                         sent = 0
                         for uid, u in list(users.items()):
