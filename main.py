@@ -455,11 +455,11 @@ async def pump_scanner(app: Application):
                 # === NEW TOKENS ===
                 try:
                     params = {
-                        "chain": "solana",
+                        "network": "mainnet",
                         "exchange": "pumpfun",
                         "limit": 20
                     }
-                    url = "https://solana-gateway.moralis.io/token/mainnet/new-tokens-by-exchange"
+                    url = "https://deep-index.moralis.io/api/v2.2/solana/new-tokens"
                     async with sess.get(url, headers=headers, params=params, timeout=15) as resp:
                         if resp.status == 200:
                             data = await resp.json()
@@ -482,12 +482,12 @@ async def pump_scanner(app: Application):
                 # === TRENDING TOKENS ===
                 try:
                     params = {
-                        "chain": "solana",
+                        "network": "mainnet",
                         "exchange": "pumpfun",
                         "limit": 30,
-                        "sort": "volume_5m_desc"
+                        "order": "volume_5m.desc"
                     }
-                    url = "https://solana-gateway.moralis.io/token/mainnet/tokens-by-exchange"
+                    url = "https://deep-index.moralis.io/api/v2.2/solana/tokens"
                     async with sess.get(url, headers=headers, params=params, timeout=15) as resp:
                         if resp.status == 200:
                             data = await resp.json()
@@ -525,8 +525,8 @@ async def pump_scanner(app: Application):
                         seen[addr] = time.time()
 
                         sym = str(token.get("symbol", "???"))[:20]
-                        vol = float(token.get("volumeUSD", 0) or token.get("volume_5m", 0) or 0)
-                        fdv = float(token.get("marketCapUSD", 0) or token.get("fdv", 0) or 0)
+                        vol = float(token.get("volume_5m", 0) or token.get("volumeUSD", 0) or 0)
+                        fdv = float(token.get("fdv", 0) or token.get("marketCapUSD", 0) or 0)
                         liq = fdv * 0.1 if fdv > 0 else 0
 
                         prev_vols = volume_history[addr]
