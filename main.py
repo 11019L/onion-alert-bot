@@ -465,28 +465,25 @@ async def pump_scanner(app: Application):
                     log.info("Moralis: No tokens this cycle")
                     await asyncio.sleep(10)
                     continue
-
                 # 3. PROCESS ALL TOKENS
-               for token in all_tokens:
-    try:
-        addr = token.get("tokenAddress") or token.get("mint") or ""
-        if isinstance(addr, (list, dict)):
-            addr = str(addr)
-        if not addr or not isinstance(addr, str):
-            continue
+                for token in all_tokens:
+                    try:
+                        addr = token.get("tokenAddress") or token.get("mint") or ""
+                        if isinstance(addr, (list, dict)):
+                            addr = str(addr)
+                        if not addr or not isinstance(addr, str):
+                            continue
 
-        if addr in seen:
-            continue
+                        if addr in seen:
+                            continue
 
-        sym = token.get("symbol", "???")
-        sym = str(sym) if not isinstance(sym, str) else sym
-        sym = sym[:20]
+                        sym = token.get("symbol", "???")
+                        sym = str(sym) if not isinstance(sym, str) else sym
+                        sym = sym[:20]
 
-        vol = float(token.get("volumeUSD", 0) or 0)
-        fdv = float(token.get("marketCapUSD", 0) or 0)
-        liq = fdv * 0.1 if fdv > 0 else 0
-
-        # [rest of logic unchanged]
+                        vol = float(token.get("volumeUSD", 0) or 0)
+                        fdv = float(token.get("marketCapUSD", 0) or 0)
+                        liq = fdv * 0.1 if fdv > 0 else 0
 
                         # VOLUME SPIKE
                         prev_vols = volume_history[addr]
