@@ -18,7 +18,9 @@ from telegram.ext import (
     CallbackQueryHandler,
 )
 from telegram.helpers import escape_markdown
-
+# NEW: Official Moralis Pump.fun Endpoints (2025)
+MORALIS_NEW_URL = "https://solana-gateway.moralis.io/token/mainnet/new-tokens-by-exchange"
+MORALIS_TRENDING_URL = "https://solana-gateway.moralis.io/token/mainnet/tokens-by-exchange"
 # --------------------------------------------------------------------------- #
 #                               SAFE SEND                                    #
 # --------------------------------------------------------------------------- #
@@ -452,7 +454,11 @@ async def pump_scanner(app: Application):
                 seen_addrs = set()
 
                 try:
-                    params = {"limit": 20}
+                  params = {
+                    "chain": "solana",
+                    "exchange": "pumpfun",
+                    "limit": 20
+                    }
                     async with sess.get(MORALIS_NEW_URL, headers=headers, params=params, timeout=15) as resp:
                         if resp.status == 200:
                             data = await resp.json()
@@ -468,7 +474,12 @@ async def pump_scanner(app: Application):
                     log.warning(f"Moralis NEW error: {e}")
 
                 try:
-                    params = {"limit": 30, "timeframe": "5m"}
+                    params = {
+                    "chain": "solana",
+                    "exchange": "pumpfun",
+                    "limit": 30,
+                    "sort": "volume_5m_desc"
+                    }
                     async with sess.get(MORALIS_TRENDING_URL, headers=headers, params=params, timeout=15) as resp:
                         if resp.status == 200:
                             data = await resp.json()
