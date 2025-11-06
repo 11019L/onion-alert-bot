@@ -462,76 +462,79 @@ async def pump_scanner(app: Application):
                     await asyncio.sleep(10)
                     continue
 
-                # 3. PROCESS ALL TOKENS (NEW + OLD)
-                for token in all_tokens:
-                    try:
-                       addr = token.get("tokenAddress") or token.get("mint") or ""
-addr = str(addr)  # FORCE STRING
-if not addr or addr in seen:
-    continue
+               for token in all_tokens:
+    try:
+        addr = token.get("tokenAddress") or token.get("mint") or ""
+        if not addr:
+            continue
+        addr = str(addr)  # FORCE STRING
 
-                        sym = token.get("symbol", "???")[:20]
-                        vol = token.get("volumeUSD", 0) or 0
-                        fdv = token.get("marketCapUSD", 0) or 0
-                        liq = fdv * 0.1 if fdv > 0 else 0
+        if addr in seen:
+            continue
 
-                        # === VOLUME SPIKE DETECTION ===
-                        prev_vols = volume_history[addr]
-                        prev_vols.append(vol)
-                        spike = False
-                        if len(prev_vols) > 1:
-                            avg_prev = sum(prev_vols[:-1]) / len(prev_vols[:-1])
-                            if avg_prev > 0 and vol / avg_prev >= 2.0:  # 2x spike
-                                spike = True
-                                log.info(f"SPIKE DETECTED → {sym} | {avg_prev:,.0f} → {vol:,.0f}")
+        sym = token.get("symbol", "???")
+        sym = str(sym) if not isinstance(sym, str) else sym
+        sym = sym[:20]
 
-                        # === ALERT LEVEL ===
-                        level = None
-                        if vol >= 100 and fdv >= 3000:
-                            level = "min"
-                        if liq >= 10000 and fdv >= 30000 and vol >= 1000:
-                            level = "medium"
-                        if spike and vol >= 500:
-                            level = "max"
+        vol = float(token.get("volumeUSD", 0) or 0)
+        fdv = float(token.get("marketCapUSD", 0) or 0)
+        liq = fdv * 0.1 if fdv > 0 else 0
 
-                        if not level:
-                            continue
+        # VOLUME SPIKE
+        prev_vols = volume_history[addr]
+        prev_vols.append(vol)
+        spike = False
+        if len(prev_vols) > 1:
+            avg_prev = sum(prev_vols[:-1]) / len(prev_vols[:-1])
+            if avg_prev > 0 and vol / avg_prev >= 2.0:
+                spike = True
+                log.info(f"SPIKE → {sym} | {avg_prev:,.0f} → {vol:,.0f}")
 
-                        # === SAFETY + DUPLICATE CHECK ===
-                        safe = await is_safe_batch([addr], "PUMP", sess)
-                        if not safe.get(addr, False):
-                            continue
+        # LEVEL
+        level = None
+        if vol >= 100 and fdv >= 3000:
+            level = "min"
+        if liq >= 10000 and fdv >= 30000 and vol >= 1000:
+            level = "medium"
+        if spike and vol >= 500:
+            level = "max"
 
-                        state = token_state.get(addr, {"sent_levels": []})
-                        if level in state["sent_levels"]:
-                            continue
+        if not level:
+            continue
 
-                        state["sent_levels"].append(level)
-                        token_state[addr] = state
-                        # DO NOT ADD TO `seen` → allow future spikes
+        # SAFETY
+        safe = await is_safe_batch([addr], "PUMP", sess)
+        if not safe.get(addr, False):
+            continue
 
-                        # === SEND ALERT ===
-                        msg = format_alert("PUMP", sym, addr, liq, fdv, vol, addr, level)
-                        sent = 0
-                        for uid, u in list(users.items()):
-    if "chat_id" not in u or not u["chat_id"]:
-        continue
-    chat_id = u["chat_id"]
-    if u["free"] <= 0 and not u.get("paid"):
-        continue
-    f = u.get("filters", {})
-    if level not in f.get("levels", []) or "PUMP" not in f.get("chains", []):
-        continue
-    await safe_send(app, chat_id, msg)
-    if u["free"] > 0 and level not in ["large_buy", "upgrade"]:
-        u["free"] -= 1
-    sent += 1
-                            except Exception as e:
-                                log.warning(f"Send failed: {e}")
-                        log.info(f"PUMP {level.upper()} → {addr} | Vol: ${vol:,.0f} | Sent to {sent}")
+        # DUPLICATE
+        state = token_state.get(addr, {"sent_levels": []})
+        if level in state["sent_levels"]:
+            continue
 
-                    except Exception as e:
-                        log.error(f"Token error: {e}")
+        state["sent_levels"].append(level)
+        token_state[addr] = state
+
+        # SEND
+        msg = format_alert("PUMP", sym, addr, liq, fdv, vol, addr, level)
+        sent = 0
+        for uid, u in list(users.items()):
+            if "chat_id" not in u or not u["chat_id"]:
+                continue
+            chat_id = u["chat_id"]
+            if u["free"] <= 0 and not u.get("paid"):
+                continue
+            f = u.get("filters", {})
+            if level not in f.get("levels", []) or "PUMP" not in f.get("chains", []):
+                continue
+            await safe_send(app, chat_id, msg)
+            if u["free"] > 0 and level not in ["large_buy", "upgrade"]:
+                u["free"] -= 1
+            sent += 1
+        log.info(f"PUMP {level.upper()} → {addr} | Vol: ${vol:,.0f} | Sent to {sent}")
+
+    except Exception as e:
+        log.error(f"Token error: {e}")
 
                 await asyncio.sleep(10)
 
