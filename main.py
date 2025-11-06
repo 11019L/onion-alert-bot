@@ -150,11 +150,14 @@ def format_alert(chain, sym, addr, liq, fdv, vol, pair, level):
     sym = sym[:20]
     sym_esc = escape_markdown(sym, version=2)
 
-    # 2. SAFE ADDRESS — HANDLE LIST/DICT/STR
-    if isinstance(addr, (list, dict)):
-        addr = str(addr)
-    if not isinstance(addr, str):
-        addr = ""
+    # 2. SAFE ADDRESS — EXTRACT STRING FROM LIST/DICT
+    if isinstance(addr, list) and addr:
+        addr = addr[0] if isinstance(addr[0], str) else str(addr[0])
+    elif isinstance(addr, dict):
+        addr = addr.get("address", "") or str(addr)
+    addr = str(addr) if not isinstance(addr, str) else addr
+
+    # SHORTEN ONLY IF LONG ENOUGH
     if len(addr) >= 14:
         addr_short = addr[:8] + "..." + addr[-6:]
     else:
@@ -469,10 +472,13 @@ async def pump_scanner(app: Application):
                 for token in all_tokens:
                     try:
                         addr = token.get("tokenAddress") or token.get("mint") or ""
-                        if isinstance(addr, (list, dict)):
-                            addr = str(addr)
-                        if not addr or not isinstance(addr, str):
-                            continue
+if isinstance(addr, list) and addr:
+    addr = addr[0] if isinstance(addr[0], str) else str(addr[0])
+elif isinstance(addr, dict):
+    addr = addr.get("address", "") or str(addr)
+addr = str(addr) if not isinstance(addr, str) else addr
+if not addr or len(addr) < 10:
+    continue
 
                         if addr in seen:
                             continue
