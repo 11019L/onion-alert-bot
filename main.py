@@ -87,22 +87,25 @@ def load_data():
             return {
                 "tracker": raw.get("tracker", {}),
                 "users": users_raw,
-                "seen": {},
-                "last_alerted": {},
-                "token_state": {},
+                "seen": {str(k): v for k, v in raw.get("seen", {}).items()},
+                "last_alerted": {str(k): v for k, v in raw.get("last_alerted", {}).items()},
+                "token_state": raw.get("token_state", {}),
             }
         except Exception as e:
             log.error(f"Load error: {e}")
-    return {"tracker": {}, "users": {}, "seen": {}, "last_alerted": {}, "token_state": {}}
+    return {
+        "tracker": {},
+        "users": {},
+        "seen": {},
+        "last_alerted": {},
+        "token_state": {},
+    }
 
 def save_data(data):
     try:
         clean_seen = {str(k): v for k, v in data["seen"].items() if k is not None}
         clean_last = {str(k): v for k, v in data["last_alerted"].items() if k is not None}
-        clean_token_state = {}
-        for k, v in data["token_state"].items():
-            if k is not None:
-                clean_token_state[str(k)] = v
+        clean_token_state = {str(k): v for k, v in data["token_state"].items() if k is not None}
 
         DATA_FILE.write_text(json.dumps({
             "tracker": data["tracker"],
@@ -145,18 +148,19 @@ def pump_url(ca):
 
 def format_alert(chain, sym, addr, liq, fdv, vol, pair, level):
     e = {"min":"Min","medium":"Medium","max":"Max","large_buy":"SNIPE","upgrade":"UPGRADED"}.get(level, level.upper())
-    link = pump_url(addr) if chain == "PUMP" else dex_url(chain, pair)
+    
+    if chain == "PUMP":
+        link = pump_url(addr)
+    else:
+        pair = pair or addr
+        link = dex_url(chain, pair)
 
     # SAFE SYMBOL
     sym = str(sym) if not isinstance(sym, str) else sym
     sym = sym[:20]
     sym_esc = escape_markdown(sym, version=2)
 
-    # SAFE ADDRESS — FULLY BULLETPROOF
-    if isinstance(addr, list) and addr:
-        addr = addr[0]
-    elif isinstance(addr, dict):
-        addr = addr.get("address") or addr.get("mint") or ""
+    # SAFE ADDRESS
     addr = str(addr) if not isinstance(addr, str) else addr
     addr = ''.join(c for c in addr if c.isalnum() or c in "+/=")[:64]
     addr_short = addr[:8] + "..." + addr[-6:] if len(addr) >= 14 else addr
@@ -180,7 +184,11 @@ def format_alert(chain, sym, addr, liq, fdv, vol, pair, level):
 async def is_safe_batch(addrs, chain, sess):
     if not addrs:
         return {}
-    chain_id = 56 if chain == "BSC" else 1
+    if chain in ["SOL", "PUMP"]:
+        # GoPlus doesn't support Solana/Pump — skip or use alternative
+        return {a: True for a in addrs}
+    
+    chain_id = 56  # BSC only
     url = GOPLUS_API.format(chain_id=chain_id, addrs=",".join(addrs))
     now = time.time()
     cached = {a: goplus_cache[a][0] for a in addrs if a in goplus_cache and now - goplus_cache[a][1] < 3600}
@@ -208,22 +216,23 @@ async def is_safe_batch(addrs, chain, sess):
     return results
 
 async def detect_large_buy(addr, chain):
-    if chain in ["SOL", "PUMP"]:
-        try:
-            payload = {"jsonrpc": "2.0", "id": 1, "method": "getSignaturesForAddress", "params": [addr, {"limit": 20}]}
-            resp = requests.post(SOLANA_RPC, json=payload, timeout=8).json()
-            for sig in resp.get("result", [])[:5]:
-                tx = requests.post(SOLANA_RPC, json={
-                    "jsonrpc": "2.0", "id": 1,
-                    "method": "getTransaction",
-                    "params": [sig["signature"], {"encoding": "jsonParsed"}]
-                }, timeout=8).json()
-                if tx.get("result"):
-                    pre, post = tx["result"]["meta"]["preBalances"][0], tx["result"]["meta"]["postBalances"][0]
-                    if (pre - post) / 1e9 * 180 > 2000:
-                        return True
-        except:
-            pass
+    if chain != "SOL":
+        return False
+    try:
+        payload = {"jsonrpc": "2.0", "id": 1, "method": "getSignaturesForAddress", "params": [addr, {"limit": 20}]}
+        resp = requests.post(SOLANA_RPC, json=payload, timeout=8).json()
+        for sig in resp.get("result", [])[:5]:
+            tx = requests.post(SOLANA_RPC, json={
+                "jsonrpc": "2.0", "id": 1,
+                "method": "getTransaction",
+                "params": [sig["signature"], {"encoding": "jsonParsed"}]
+            }, timeout=8).json()
+            if tx.get("result"):
+                pre, post = tx["result"]["meta"]["preBalances"][0], tx["result"]["meta"]["postBalances"][0]
+                if (pre - post) / 1e9 * 180 > 2000:
+                    return True
+    except:
+        pass
     return False
 
 def get_alert_level(liq, fdv, vol, new, spike, buy, chain="SOL"):
@@ -232,13 +241,14 @@ def get_alert_level(liq, fdv, vol, new, spike, buy, chain="SOL"):
             return "min"
         if liq >= 15000 and fdv >= 40000 and vol >= 1500:
             return "medium"
+        return None
     else:
         if new and liq >= 1000 and fdv >= 10000 and vol >= 500:
             return "min"
         if liq >= 25000 and fdv >= 70000 and vol >= 3000:
             return "medium"
-    if buy and spike:
-        return "max"
+        if buy and spike:
+            return "max"
     return None
 
 # --------------------------------------------------------------------------- #
@@ -416,7 +426,7 @@ async def button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         else:
             lst = f["levels"] if key in ["min","medium","max"] else f["chains"] if key in ["sol","bsc"] else None
             item = key if key in ["min","medium","max"] else key.upper()
-        if lst:
+        if lst and item:
             if item in lst:
                 lst.remove(item)
             else:
@@ -439,16 +449,21 @@ async def pump_scanner(app: Application):
         while True:
             try:
                 all_tokens = []
+                seen_addrs = set()
 
                 try:
                     params = {"limit": 20}
                     async with sess.get(MORALIS_NEW_URL, headers=headers, params=params, timeout=15) as resp:
                         if resp.status == 200:
                             data = await resp.json()
-                            new_tokens = data.get("result", [])
-                            if new_tokens:
-                                log.info(f"Moralis NEW: {len(new_tokens)} new tokens")
-                                all_tokens.extend(new_tokens)
+                            for t in data.get("result", []):
+                                addr = t.get("tokenAddress") or t.get("mint") or ""
+                                if isinstance(addr, (list, dict)):
+                                    addr = (addr[0] if isinstance(addr, list) else addr.get("address") or addr.get("mint") or "")
+                                addr = str(addr)[:64]
+                                if addr and len(addr) >= 10 and addr not in seen_addrs:
+                                    seen_addrs.add(addr)
+                                    all_tokens.append(t)
                 except Exception as e:
                     log.warning(f"Moralis NEW error: {e}")
 
@@ -457,45 +472,41 @@ async def pump_scanner(app: Application):
                     async with sess.get(MORALIS_TRENDING_URL, headers=headers, params=params, timeout=15) as resp:
                         if resp.status == 200:
                             data = await resp.json()
-                            trending = data.get("result", [])
-                            if trending:
-                                log.info(f"Moralis TRENDING: {len(trending)} trending tokens")
-                                all_tokens.extend(trending)
+                            for t in data.get("result", []):
+                                addr = t.get("tokenAddress") or t.get("mint") or ""
+                                if isinstance(addr, (list, dict)):
+                                    addr = (addr[0] if isinstance(addr, list) else addr.get("address") or addr.get("mint") or "")
+                                addr = str(addr)[:64]
+                                if addr and len(addr) >= 10 and addr not in seen_addrs:
+                                    seen_addrs.add(addr)
+                                    all_tokens.append(t)
                 except Exception as e:
                     log.warning(f"Moralis TRENDING error: {e}")
 
                 if not all_tokens:
-                    log.info("Moralis: No tokens this cycle")
                     await asyncio.sleep(10)
                     continue
 
                 for token in all_tokens:
                     try:
-                        # SAFE ADDR
                         addr = token.get("tokenAddress") or token.get("mint") or ""
-                        if isinstance(addr, list) and addr:
-                            addr = addr[0]
-                        elif isinstance(addr, dict):
-                            addr = addr.get("address") or addr.get("mint") or ""
-                        addr = str(addr) if not isinstance(addr, str) else addr
-                        addr = ''.join(c for c in addr if c.isalnum() or c in "+/=")[:64]
+                        if isinstance(addr, (list, dict)):
+                            addr = (addr[0] if isinstance(addr, list) else addr.get("address") or addr.get("mint") or "")
+                        addr = str(addr)[:64]
                         if not addr or len(addr) < 10:
                             continue
 
-                        if addr in seen:
+                        # Cooldown: 5 min
+                        if addr in seen and time.time() - seen[addr] < 300:
                             continue
+                        seen[addr] = time.time()
 
-                        # SAFE SYMBOL
-                        sym = token.get("symbol", "???")
-                        sym = str(sym) if not isinstance(sym, str) else sym
-                        sym = sym[:20]
-
-                        # METRICS
+                        sym = str(token.get("symbol", "???"))[:20]
                         vol = float(token.get("volumeUSD", 0) or 0)
                         fdv = float(token.get("marketCapUSD", 0) or 0)
                         liq = fdv * 0.1 if fdv > 0 else 0
 
-                        # VOLUME SPIKE
+                        # Volume spike
                         prev_vols = volume_history[addr]
                         prev_vols.append(vol)
                         spike = False
@@ -503,47 +514,36 @@ async def pump_scanner(app: Application):
                             avg_prev = sum(prev_vols[:-1]) / len(prev_vols[:-1])
                             if avg_prev > 0 and vol / avg_prev >= 2.0:
                                 spike = True
-                                log.info(f"SPIKE → {sym} | {avg_prev:,.0f} → {vol:,.0f}")
 
-                        # LEVEL
-                        level = None
-                        if vol >= 100 and fdv >= 3000:
-                            level = "min"
-                        if liq >= 10000 and fdv >= 30000 and vol >= 1000:
-                            level = "medium"
-                        if spike and vol >= 500:
-                            level = "max"
-
+                        level = get_alert_level(liq, fdv, vol, True, spike, False, "PUMP")
                         if not level:
                             continue
 
-                        # SAFETY
-                        safe = await is_safe_batch([addr], "PUMP", sess)
-                        if not safe.get(addr, False):
-                            continue
+                        # Safety (skip GoPlus for PUMP)
+                        safe = True
 
-                        # DUPLICATE
+                        # Escalation
                         state = token_state.get(addr, {"sent_levels": []})
                         if level in state["sent_levels"]:
                             continue
-
                         state["sent_levels"].append(level)
                         token_state[addr] = state
 
-                        # SEND
-                        msg = format_alert("PUMP", sym, addr, liq, fdv, vol, addr, level)
+                        # Send
+                        msg = format_alert("PUMP", sym, addr, liq, fdv, vol, None, level)
                         sent = 0
                         for uid, u in list(users.items()):
                             if "chat_id" not in u or not u["chat_id"]:
                                 continue
                             chat_id = u["chat_id"]
-                            if u["free"] <= 0 and not u.get("paid"):
+                            is_premium = u.get("paid") and (u.get("paid_until") is None or datetime.fromisoformat(u["paid_until"]) > datetime.utcnow())
+                            if u["free"] <= 0 and not is_premium:
                                 continue
                             f = u.get("filters", {})
                             if level not in f.get("levels", []) or "PUMP" not in f.get("chains", []):
                                 continue
                             await safe_send(app, chat_id, msg)
-                            if u["free"] > 0 and level not in ["large_buy", "upgrade"]:
+                            if u["free"] > 0:
                                 u["free"] -= 1
                             sent += 1
                         log.info(f"PUMP {level.upper()} → {addr} | Vol: ${vol:,.0f} | Sent to {sent}")
@@ -574,54 +574,35 @@ async def dex_scanner(app: Application):
                             if r.status == 200:
                                 data = await r.json()
                                 pairs = data.get("data", {}).get("pairs", [])[:50]
-                                log.info(f"BIRDEYE: Fetched {len(pairs)} new pairs on {chain.upper()}")
-
                                 for p in pairs:
                                     addr = p.get("baseToken", {}).get("address")
-                                    if not addr:
+                                    pair_addr = p.get("pairAddress")
+                                    if not addr or not pair_addr or len(pair_addr) < 30:
                                         continue
-
-                                    fake_pair = {
-                                        "baseToken": {
-                                            "address": addr,
-                                            "symbol": p.get("baseToken", {}).get("symbol", "???")
-                                        },
-                                        "liquidity": {"usd": p.get("liquidity", 0)},
-                                        "fdv": p.get("fdv", 0),
-                                        "volume": {"m5": p.get("volume", {}).get("h5", 0)},
-                                        "pairAddress": p.get("pairAddress", addr)
-                                    }
-                                    candidates.append((fake_pair, chain.upper(), chain, True, p.get("pairAddress")))
-                            else:
-                                log.warning(f"BIRDEYE: HTTP {r.status} for {url}")
+                                    candidates.append((p, chain.upper(), pair_addr))
                     except Exception as e:
                         log.error(f"BIRDEYE fetch error {chain}: {e}")
 
                 if not candidates:
-                    log.info("BIRDEYE: No new pairs this cycle")
                     await asyncio.sleep(60)
                     continue
 
                 addr_to_pair = {}
-                for p, chain, slug, is_new_pair, pair_addr in candidates:
-                    base = p.get("baseToken", {})
-                    addr = base.get("address")
-                    if not addr or not pair_addr or addr in seen:
+                for p, chain, pair_addr in candidates:
+                    addr = p.get("baseToken", {}).get("address")
+                    if addr in seen and time.time() - seen[addr] < 300:
                         continue
-                    addr_to_pair[addr] = (p, chain, slug, is_new_pair, pair_addr)
+                    addr_to_pair[addr] = (p, chain, pair_addr)
 
                 per_chain = defaultdict(list)
-                for addr, (_, chain, _, _, _) in addr_to_pair.items():
+                for addr, (_, chain, _) in addr_to_pair.items():
                     per_chain[chain].append(addr)
                 safety = {}
                 for chain, addrs in per_chain.items():
                     safety.update(await is_safe_batch(addrs, chain, sess))
 
-                safe_count = sum(1 for v in safety.values() if v)
-                log.info(f"BIRDEYE: {safe_count}/{len(safety)} passed safety")
-
                 alerts = []
-                for addr, (p, chain, slug, is_new_pair, pair_addr) in addr_to_pair.items():
+                for addr, (p, chain, pair_addr) in addr_to_pair.items():
                     if not safety.get(addr, False):
                         continue
                     base = p.get("baseToken", {})
@@ -635,7 +616,7 @@ async def dex_scanner(app: Application):
                     spike = vol / (sum(h) / len(h)) if len(h) > 1 else 1.0
                     volume_spike = spike >= 2.0
                     large_buy = await detect_large_buy(addr, chain)
-                    level = get_alert_level(liq, fdv, vol, is_new_pair, volume_spike, large_buy)
+                    level = get_alert_level(liq, fdv, vol, True, volume_spike, large_buy, chain)
                     if not level:
                         continue
 
@@ -650,7 +631,6 @@ async def dex_scanner(app: Application):
 
                     state["sent_levels"].append(level)
                     token_state[addr] = state
-                    last_alerted[addr] = time.time()
                     seen[addr] = time.time()
 
                     msg = format_alert(chain, sym, addr, liq, fdv, vol, pair_addr, level)
