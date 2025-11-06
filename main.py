@@ -19,6 +19,22 @@ from telegram.ext import (
 )
 from telegram.helpers import escape_markdown
 
+async def safe_send(app, chat_id, text):
+    try:
+        await app.bot.send_message(
+            chat_id=chat_id,
+            text=text,
+            parse_mode="MarkdownV2",
+            disable_web_page_preview=True
+        )
+    except Exception as e:
+        log.warning(f"Send failed (chat {chat_id}): {e}")
+        # Fallback: send plain text
+        try:
+            await app.bot.send_message(chat_id=chat_id, text=text, disable_web_page_preview=True)
+        except:
+            pass
+
 # --------------------------------------------------------------------------- #
 #                               CONFIGURATION                               #
 # --------------------------------------------------------------------------- #
@@ -129,9 +145,15 @@ def format_alert(chain, sym, addr, liq, fdv, vol, pair, level):
     e = {"min":"Min","medium":"Medium","max":"Max","large_buy":"SNIPE","upgrade":"UPGRADED"}.get(level, level.upper())
     link = pump_url(addr) if chain == "PUMP" else dex_url(chain, pair)
 
-    # FULLY ESCAPED — NO BLACK TEXT
-    sym_esc = escape_markdown(sym, version=2)
-    addr_esc = escape_markdown(addr[:8] + "..." + addr[-6:], version=2)
+    # FIX 1: SAFE SYMBOL
+    sym = str(sym) if not isinstance(sym, str) else sym
+    sym_esc = escape_markdown(sym[:20], version=2)
+
+    # FIX 2: SAFE ADDRESS
+    addr_str = str(addr) if not isinstance(addr, str) else addr
+    addr_short = addr_str[:8] + "..." + addr_str[-6:] if len(addr_str) >= 14 else addr_str
+    addr_esc = escape_markdown(addr_short, version=2)
+
     chain_esc = escape_markdown(chain, version=2)
     level_esc = escape_markdown(e, version=2)
 
@@ -143,7 +165,6 @@ def format_alert(chain, sym, addr, liq, fdv, vol, pair, level):
         f"5m Vol: ${vol:,.0f}\n"
         f"[View]({link})"
     )
-
 # --------------------------------------------------------------------------- #
 #                               RUG / BUY                                   #
 # --------------------------------------------------------------------------- #
@@ -444,9 +465,10 @@ async def pump_scanner(app: Application):
                 # 3. PROCESS ALL TOKENS (NEW + OLD)
                 for token in all_tokens:
                     try:
-                        addr = token.get("tokenAddress") or token.get("mint")
-                        if not addr:
-                            continue
+                       addr = token.get("tokenAddress") or token.get("mint") or ""
+addr = str(addr)  # FORCE STRING
+if not addr or addr in seen:
+    continue
 
                         sym = token.get("symbol", "???")[:20]
                         vol = token.get("volumeUSD", 0) or 0
@@ -492,19 +514,18 @@ async def pump_scanner(app: Application):
                         msg = format_alert("PUMP", sym, addr, liq, fdv, vol, addr, level)
                         sent = 0
                         for uid, u in list(users.items()):
-                            if "chat_id" not in u or not u["chat_id"]:
-                                continue
-                            chat_id = u["chat_id"]
-                            if u["free"] <= 0 and not u.get("paid"):
-                                continue
-                            f = u.get("filters", {})
-                            if level not in f.get("levels", []) or "PUMP" not in f.get("chains", []):
-                                continue
-                            try:
-                                await app.bot.send_message(chat_id, msg, parse_mode="MarkdownV2", disable_web_page_preview=True)
-                                if u["free"] > 0 and level not in ["large_buy", "upgrade"]:
-                                    u["free"] -= 1
-                                sent += 1
+    if "chat_id" not in u or not u["chat_id"]:
+        continue
+    chat_id = u["chat_id"]
+    if u["free"] <= 0 and not u.get("paid"):
+        continue
+    f = u.get("filters", {})
+    if level not in f.get("levels", []) or "PUMP" not in f.get("chains", []):
+        continue
+    await safe_send(app, chat_id, msg)
+    if u["free"] > 0 and level not in ["large_buy", "upgrade"]:
+        u["free"] -= 1
+    sent += 1
                             except Exception as e:
                                 log.warning(f"Send failed: {e}")
                         log.info(f"PUMP {level.upper()} → {addr} | Vol: ${vol:,.0f} | Sent to {sent}")
