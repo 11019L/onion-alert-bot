@@ -416,15 +416,12 @@ async def button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("Settings saved!")
         await query.message.reply_text("Your filters are now active.")
 
-# --------------------------------------------------------------------------- #
-#                   PUMP SCANNER (NEW + VOLUME SPIKES)                        #
-# --------------------------------------------------------------------------- #
 async def pump_scanner(app: Application):
     headers = {"accept": "application/json", "X-API-Key": MORALIS_API_KEY}
     log.info("PUMP SCANNER: Starting (new + volume spikes)")
 
-    # Track volume history per token
-        volume_history = defaultdict(lambda: deque(maxlen=3))
+    # CORRECT INDENTATION — INSIDE FUNCTION
+    volume_history = defaultdict(lambda: deque(maxlen=3))
 
     async with aiohttp.ClientSession() as sess:
         while True:
@@ -444,7 +441,7 @@ async def pump_scanner(app: Application):
                 except Exception as e:
                     log.warning(f"Moralis NEW error: {e}")
 
-                # 2. GET TRENDING (includes old tokens with volume)
+                # 2. GET TRENDING
                 try:
                     params = {"limit": 30, "timeframe": "5m"}
                     async with sess.get(MORALIS_TRENDING_URL, headers=headers, params=params, timeout=15) as resp:
@@ -462,13 +459,13 @@ async def pump_scanner(app: Application):
                     await asyncio.sleep(10)
                     continue
 
-                   # 3. PROCESS ALL TOKENS
+                # 3. PROCESS ALL TOKENS
                 for token in all_tokens:
                     try:
                         addr = token.get("tokenAddress") or token.get("mint") or ""
                         if not addr:
                             continue
-                        addr = str(addr)  # FORCE STRING
+                        addr = str(addr)
 
                         if addr in seen:
                             continue
