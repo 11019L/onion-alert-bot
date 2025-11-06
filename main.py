@@ -471,27 +471,30 @@ async def pump_scanner(app: Application):
                 # 3. PROCESS ALL TOKENS
                 for token in all_tokens:
                     try:
+                        # === SAFE ADDR EXTRACTION ===
                         addr = token.get("tokenAddress") or token.get("mint") or ""
-if isinstance(addr, list) and addr:
-    addr = addr[0] if isinstance(addr[0], str) else str(addr[0])
-elif isinstance(addr, dict):
-    addr = addr.get("address", "") or str(addr)
-addr = str(addr) if not isinstance(addr, str) else addr
-if not addr or len(addr) < 10:
-    continue
+                        if isinstance(addr, list) and addr:
+                            addr = addr[0] if isinstance(addr[0], str) else str(addr[0])
+                        elif isinstance(addr, dict):
+                            addr = addr.get("address", "") or str(addr)
+                        addr = str(addr) if not isinstance(addr, str) else addr
+                        if not addr or len(addr) < 10:
+                            continue
 
                         if addr in seen:
                             continue
 
+                        # === SAFE SYMBOL ===
                         sym = token.get("symbol", "???")
                         sym = str(sym) if not isinstance(sym, str) else sym
                         sym = sym[:20]
 
+                        # === METRICS ===
                         vol = float(token.get("volumeUSD", 0) or 0)
                         fdv = float(token.get("marketCapUSD", 0) or 0)
                         liq = fdv * 0.1 if fdv > 0 else 0
 
-                        # VOLUME SPIKE
+                        # === VOLUME SPIKE ===
                         prev_vols = volume_history[addr]
                         prev_vols.append(vol)
                         spike = False
@@ -501,7 +504,7 @@ if not addr or len(addr) < 10:
                                 spike = True
                                 log.info(f"SPIKE → {sym} | {avg_prev:,.0f} → {vol:,.0f}")
 
-                        # LEVEL
+                        # === LEVEL ===
                         level = None
                         if vol >= 100 and fdv >= 3000:
                             level = "min"
@@ -513,12 +516,12 @@ if not addr or len(addr) < 10:
                         if not level:
                             continue
 
-                        # SAFETY
+                        # === SAFETY ===
                         safe = await is_safe_batch([addr], "PUMP", sess)
                         if not safe.get(addr, False):
                             continue
 
-                        # DUPLICATE
+                        # === DUPLICATE ===
                         state = token_state.get(addr, {"sent_levels": []})
                         if level in state["sent_levels"]:
                             continue
@@ -526,7 +529,7 @@ if not addr or len(addr) < 10:
                         state["sent_levels"].append(level)
                         token_state[addr] = state
 
-                        # SEND
+                        # === SEND ===
                         msg = format_alert("PUMP", sym, addr, liq, fdv, vol, addr, level)
                         sent = 0
                         for uid, u in list(users.items()):
