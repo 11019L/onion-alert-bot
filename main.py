@@ -19,8 +19,7 @@ from telegram.ext import (
 )
 from telegram.helpers import escape_markdown
 # NEW: Official Moralis Pump.fun Endpoints (2025)
-MORALIS_NEW_URL = "https://solana-gateway.moralis.io/token/mainnet/new-tokens-by-exchange"
-MORALIS_TRENDING_URL = "https://solana-gateway.moralis.io/token/mainnet/tokens-by-exchange"
+
 # --------------------------------------------------------------------------- #
 #                               SAFE SEND                                    #
 # --------------------------------------------------------------------------- #
@@ -438,11 +437,11 @@ async def button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("Settings saved!")
         await query.message.reply_text("Your filters are now active.")
 
-# --------------------------------------------------------------------------- #
-#                               PUMP SCANNER                                #
-# --------------------------------------------------------------------------- #
 async def pump_scanner(app: Application):
-    headers = {"accept": "application/json", "X-API-Key": MORALIS_API_KEY}
+    headers = {
+        "accept": "application/json",
+        "X-API-Key": MORALIS_API_KEY
+    }
     log.info("PUMP SCANNER: Starting (new + volume spikes)")
 
     volume_history = defaultdict(lambda: deque(maxlen=3))
@@ -453,19 +452,25 @@ async def pump_scanner(app: Application):
                 all_tokens = []
                 seen_addrs = set()
 
+                # === NEW TOKENS ===
                 try:
-                  params = {
-                    "chain": "solana",
-                    "exchange": "pumpfun",
-                    "limit": 20
+                    params = {
+                        "chain": "solana",
+                        "exchange": "pumpfun",
+                        "limit": 20
                     }
-                    async with sess.get(MORALIS_NEW_URL, headers=headers, params=params, timeout=15) as resp:
+                    async with sess.get(
+                        "https://solana-gateway.moralis.io/token/mainnet/new-tokens-by-exchange",
+                        headers=headers,
+                        params=params,
+                        timeout=15
+                    ) as resp:
                         if resp.status == 200:
                             data = await resp.json()
-                            for t in data.get("result", []):
-                                addr = t.get("tokenAddress") or t.get("mint") or ""
-                                if isinstance(addr, (list, dict)):
-                                    addr = (addr[0] if isinstance(addr, list) else addr.get("address") or addr.get("mint") or "")
+                            new_tokens = data.get("result", [])
+                            log.info(f"Moralis NEW: {len(new_tokens)} new tokens")
+                            for t in new_tokens:
+                                addr = t.get("mint") or t.get("tokenAddress") or ""
                                 addr = str(addr)[:64]
                                 if addr and len(addr) >= 10 and addr not in seen_addrs:
                                     seen_addrs.add(addr)
@@ -473,20 +478,26 @@ async def pump_scanner(app: Application):
                 except Exception as e:
                     log.warning(f"Moralis NEW error: {e}")
 
+                # === TRENDING TOKENS ===
                 try:
                     params = {
-                    "chain": "solana",
-                    "exchange": "pumpfun",
-                    "limit": 30,
-                    "sort": "volume_5m_desc"
+                        "chain": "solana",
+                        "exchange": "pumpfun",
+                        "limit": 30,
+                        "sort": "volume_5m_desc"
                     }
-                    async with sess.get(MORALIS_TRENDING_URL, headers=headers, params=params, timeout=15) as resp:
+                    async with sess.get(
+                        "https://solana-gateway.moralis.io/token/mainnet/tokens-by-exchange",
+                        headers=headers,
+                        params=params,
+                        timeout=15
+                    ) as resp:
                         if resp.status == 200:
                             data = await resp.json()
-                            for t in data.get("result", []):
-                                addr = t.get("tokenAddress") or t.get("mint") or ""
-                                if isinstance(addr, (list, dict)):
-                                    addr = (addr[0] if isinstance(addr, list) else addr.get("address") or addr.get("mint") or "")
+                            trending = data.get("result", [])
+                            log.info(f"Moralis TRENDING: {len(trending)} trending tokens")
+                            for t in trending:
+                                addr = t.get("mint") or t.get("tokenAddress") or ""
                                 addr = str(addr)[:64]
                                 if addr and len(addr) >= 10 and addr not in seen_addrs:
                                     seen_addrs.add(addr)
@@ -495,14 +506,14 @@ async def pump_scanner(app: Application):
                     log.warning(f"Moralis TRENDING error: {e}")
 
                 if not all_tokens:
+                    log.info("Moralis: No tokens this cycle")
                     await asyncio.sleep(10)
                     continue
 
+                # === PROCESS EACH TOKEN ===
                 for token in all_tokens:
                     try:
-                        addr = token.get("tokenAddress") or token.get("mint") or ""
-                        if isinstance(addr, (list, dict)):
-                            addr = (addr[0] if isinstance(addr, list) else addr.get("address") or addr.get("mint") or "")
+                        addr = token.get("mint") or token.get("tokenAddress") or ""
                         addr = str(addr)[:64]
                         if not addr or len(addr) < 10:
                             continue
@@ -513,8 +524,8 @@ async def pump_scanner(app: Application):
                         seen[addr] = time.time()
 
                         sym = str(token.get("symbol", "???"))[:20]
-                        vol = float(token.get("volumeUSD", 0) or 0)
-                        fdv = float(token.get("marketCapUSD", 0) or 0)
+                        vol = float(token.get("volumeUSD", 0) or token.get("volume_5m", 0) or 0)
+                        fdv = float(token.get("marketCapUSD", 0) or token.get("fdv", 0) or 0)
                         liq = fdv * 0.1 if fdv > 0 else 0
 
                         # Volume spike
@@ -530,24 +541,24 @@ async def pump_scanner(app: Application):
                         if not level:
                             continue
 
-                        # Safety (skip GoPlus for PUMP)
-                        safe = True
-
-                        # Escalation
+                        # Escalation logic
                         state = token_state.get(addr, {"sent_levels": []})
                         if level in state["sent_levels"]:
                             continue
                         state["sent_levels"].append(level)
                         token_state[addr] = state
 
-                        # Send
+                        # Send alert
                         msg = format_alert("PUMP", sym, addr, liq, fdv, vol, None, level)
                         sent = 0
                         for uid, u in list(users.items()):
                             if "chat_id" not in u or not u["chat_id"]:
                                 continue
                             chat_id = u["chat_id"]
-                            is_premium = u.get("paid") and (u.get("paid_until") is None or datetime.fromisoformat(u["paid_until"]) > datetime.utcnow())
+                            is_premium = u.get("paid") and (
+                                u.get("paid_until") is None or
+                                datetime.fromisoformat(u["paid_until"]) > datetime.utcnow()
+                            )
                             if u["free"] <= 0 and not is_premium:
                                 continue
                             f = u.get("filters", {})
@@ -557,7 +568,7 @@ async def pump_scanner(app: Application):
                             if u["free"] > 0:
                                 u["free"] -= 1
                             sent += 1
-                        log.info(f"PUMP {level.upper()} → {addr} | Vol: ${vol:,.0f} | Sent to {sent}")
+                        log.info(f"PUMP {level.upper()} -> {addr} | Vol: ${vol:,.0f} | Sent to {sent}")
 
                     except Exception as e:
                         log.error(f"Token error: {e}")
