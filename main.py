@@ -442,7 +442,7 @@ async def pump_scanner(app: Application):
         "accept": "application/json",
         "X-API-Key": MORALIS_API_KEY
     }
-    log.info("PUMP SCANNER: Starting (new + volume spikes)")
+    log.info("PUMP SCANNER: Starting with Moralis Pump.fun APIs")
 
     volume_history = defaultdict(lambda: deque(maxlen=3))
 
@@ -459,22 +459,23 @@ async def pump_scanner(app: Application):
                         "exchange": "pumpfun",
                         "limit": 20
                     }
-                    async with sess.get(
-                        "https://solana-gateway.moralis.io/token/mainnet/new-tokens-by-exchange",
-                        headers=headers,
-                        params=params,
-                        timeout=15
-                    ) as resp:
+                    url = "https://solana-gateway.moralis.io/token/mainnet/new-tokens-by-exchange"
+                    async with sess.get(url, headers=headers, params=params, timeout=15) as resp:
                         if resp.status == 200:
                             data = await resp.json()
                             new_tokens = data.get("result", [])
-                            log.info(f"Moralis NEW: {len(new_tokens)} new tokens")
-                            for t in new_tokens:
-                                addr = t.get("mint") or t.get("tokenAddress") or ""
-                                addr = str(addr)[:64]
-                                if addr and len(addr) >= 10 and addr not in seen_addrs:
-                                    seen_addrs.add(addr)
-                                    all_tokens.append(t)
+                            if new_tokens:
+                                log.info(f"Moralis NEW Pump.fun: {len(new_tokens)} tokens")
+                                for t in new_tokens:
+                                    addr = t.get("mint") or t.get("tokenAddress") or ""
+                                    addr = str(addr)[:64]
+                                    if addr and len(addr) >= 10 and addr not in seen_addrs:
+                                        seen_addrs.add(addr)
+                                        all_tokens.append(t)
+                            else:
+                                log.info("Moralis NEW: empty result")
+                        else:
+                            log.warning(f"Moralis NEW HTTP {resp.status}")
                 except Exception as e:
                     log.warning(f"Moralis NEW error: {e}")
 
@@ -486,31 +487,32 @@ async def pump_scanner(app: Application):
                         "limit": 30,
                         "sort": "volume_5m_desc"
                     }
-                    async with sess.get(
-                        "https://solana-gateway.moralis.io/token/mainnet/tokens-by-exchange",
-                        headers=headers,
-                        params=params,
-                        timeout=15
-                    ) as resp:
+                    url = "https://solana-gateway.moralis.io/token/mainnet/tokens-by-exchange"
+                    async with sess.get(url, headers=headers, params=params, timeout=15) as resp:
                         if resp.status == 200:
                             data = await resp.json()
                             trending = data.get("result", [])
-                            log.info(f"Moralis TRENDING: {len(trending)} trending tokens")
-                            for t in trending:
-                                addr = t.get("mint") or t.get("tokenAddress") or ""
-                                addr = str(addr)[:64]
-                                if addr and len(addr) >= 10 and addr not in seen_addrs:
-                                    seen_addrs.add(addr)
-                                    all_tokens.append(t)
+                            if trending:
+                                log.info(f"Moralis TRENDING Pump.fun: {len(trending)} tokens")
+                                for t in trending:
+                                    addr = t.get("mint") or t.get("tokenAddress") or ""
+                                    addr = str(addr)[:64]
+                                    if addr and len(addr) >= 10 and addr not in seen_addrs:
+                                        seen_addrs.add(addr)
+                                        all_tokens.append(t)
+                            else:
+                                log.info("Moralis TRENDING: empty result")
+                        else:
+                            log.warning(f"Moralis TRENDING HTTP {resp.status}")
                 except Exception as e:
                     log.warning(f"Moralis TRENDING error: {e}")
 
                 if not all_tokens:
-                    log.info("Moralis: No tokens this cycle")
+                    log.info("Moralis Pump.fun: No tokens this cycle")
                     await asyncio.sleep(10)
                     continue
 
-                # === PROCESS EACH TOKEN ===
+                # === PROCESS TOKENS ===
                 for token in all_tokens:
                     try:
                         addr = token.get("mint") or token.get("tokenAddress") or ""
@@ -518,7 +520,6 @@ async def pump_scanner(app: Application):
                         if not addr or len(addr) < 10:
                             continue
 
-                        # Cooldown: 5 min
                         if addr in seen and time.time() - seen[addr] < 300:
                             continue
                         seen[addr] = time.time()
@@ -528,7 +529,6 @@ async def pump_scanner(app: Application):
                         fdv = float(token.get("marketCapUSD", 0) or token.get("fdv", 0) or 0)
                         liq = fdv * 0.1 if fdv > 0 else 0
 
-                        # Volume spike
                         prev_vols = volume_history[addr]
                         prev_vols.append(vol)
                         spike = False
@@ -541,14 +541,12 @@ async def pump_scanner(app: Application):
                         if not level:
                             continue
 
-                        # Escalation logic
                         state = token_state.get(addr, {"sent_levels": []})
                         if level in state["sent_levels"]:
                             continue
                         state["sent_levels"].append(level)
                         token_state[addr] = state
 
-                        # Send alert
                         msg = format_alert("PUMP", sym, addr, liq, fdv, vol, None, level)
                         sent = 0
                         for uid, u in list(users.items()):
