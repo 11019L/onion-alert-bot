@@ -238,10 +238,12 @@ async def detect_large_buy(addr, chain):
 
 def get_alert_level(liq, fdv, vol, new, spike, buy, chain="SOL"):
     if chain == "PUMP":
-        if vol >= 200 and fdv >= 5000:
+        if vol >= 500 and fdv >= 4000:
             return "min"
-        if liq >= 15000 and fdv >= 40000 and vol >= 1500:
+        if vol >= 3000 and fdv >= 50000 and liq >= 10000:
             return "medium"
+        if spike and vol >= 500:
+            return "max"
         return None
     else:
         if new and liq >= 1000 and fdv >= 10000 and vol >= 500:
@@ -504,66 +506,90 @@ async def pump_scanner(app: Application):
                     continue
 
                 # === PROCESS TOKENS ===
-                for token in all_tokens:
-                    try:
-                        addr = token.get("tokenAddress") or token.get("mint") or ""
-                        addr = str(addr)[:64]
-                        if not addr or len(addr) < 10:
-                            continue
+               # === PROCESS TOKENS ===
+for token in all_tokens:
+    try:
+        addr = token.get("tokenAddress") or token.get("mint") or ""
+        addr = str(addr)[:64]
+        if not addr or len(addr) < 10:
+            continue
 
-                        if addr in seen and time.time() - seen[addr] < 300:
-                            continue
-                        seen[addr] = time.time()
+        # Cooldown: 90 seconds
+        if addr in seen and time.time() - seen[addr] < 90:
+            continue
+        seen[addr] = time.time()
 
-                        sym = str(token.get("symbol", "???"))[:20]
-                        # Volume: Use direct field or derive (price * liquidity as proxy for 5m vol if missing)
-                        vol_raw = token.get("volume_5m") or token.get("volume", 0)
-                        vol = float(vol_raw) if vol_raw else (float(token.get("priceUsd", 0)) * float(token.get("liquidity", 0)) * 0.1)  # Proxy: 10% turnover
-                        fdv = float(token.get("fullyDilutedValuation", 0) or token.get("fdv", 0) or 0)
-                        liq = float(token.get("liquidity", 0))
+        sym = str(token.get("symbol", "PUMP"))[:20]
 
-                        # Volume spike detection
-                        prev_vols = volume_history[addr]
-                        prev_vols.append(vol)
-                        spike = False
-                        if len(prev_vols) > 1:
-                            avg_prev = sum(prev_vols[:-1]) / len(prev_vols[:-1])
-                            if avg_prev > 0 and vol / avg_prev >= 2.0:
-                                spike = True
+        # FDV
+        fdv = float(token.get("fullyDilutedValuation", 0) or token.get("fdv", 0) or 0)
 
-                        level = get_alert_level(liq, fdv, vol, True, spike, False, "PUMP")
-                        if not level:
-                            continue
+        # Liquidity: use direct, fallback to 12% of FDV
+        liq = float(token.get("liquidity", 0))
+        if liq == 0 and fdv > 0:
+            liq = fdv * 0.12
 
-                        state = token_state.get(addr, {"sent_levels": []})
-                        if level in state["sent_levels"]:
-                            continue
-                        state["sent_levels"].append(level)
-                        token_state[addr] = state
+        # Volume: prefer 5m, else estimate from 24h
+        vol_raw = token.get("volume_5m") or token.get("volume", 0)
+        vol = float(vol_raw)
+        if not token.get("volume_5m") and vol > 0:
+            vol = vol / 288  # 24h → 5m estimate
 
-                        msg = format_alert("PUMP", sym, addr, liq, fdv, vol, None, level)
-                        sent = 0
-                        for uid, u in list(users.items()):
-                            if "chat_id" not in u or not u["chat_id"]:
-                                continue
-                            chat_id = u["chat_id"]
-                            is_premium = u.get("paid") and (
-                                u.get("paid_until") is None or
-                                datetime.fromisoformat(u["paid_until"]) > datetime.utcnow()
-                            )
-                            if u["free"] <= 0 and not is_premium:
-                                continue
-                            f = u.get("filters", {})
-                            if level not in f.get("levels", []) or "PUMP" not in f.get("chains", []):
-                                continue
-                            await safe_send(app, chat_id, msg)
-                            if u["free"] > 0:
-                                u["free"] -= 1
-                            sent += 1
-                        log.info(f"PUMP {level.upper()} -> {addr} | Vol: ${vol:,.0f} | Sent to {sent}")
+        # === DEBUG LOG (remove later) ===
+        log.info(f"PUMP DEBUG → {sym} | FDV: ${fdv:,.0f} | Liq: ${liq:,.0f} | Vol: ${vol:,.0f}")
 
-                    except Exception as e:
-                        log.error(f"Token error: {e}")
+        # === SAFE VOLUME SPIKE ===
+        prev_vols = list(volume_history[addr])
+        prev_vols.append(vol)
+        volume_history[addr] = deque(prev_vols[-3:], maxlen=3)
+
+        spike = False
+        if len(prev_vols) >= 2:
+            recent_prev = [v for v in prev_vols[:-1] if v > 0]
+            if recent_prev:
+                avg_prev = sum(recent_prev) / len(recent_prev)
+                if vol >= avg_prev * 2.0:
+                    spike = True
+
+        # === ALERT LEVEL ===
+        level = get_alert_level(liq, fdv, vol, True, spike, False, "PUMP")
+        if not level:
+            continue
+
+        # === PREVENT DUPLICATES ===
+        state = token_state.get(addr, {"sent_levels": set()})
+        if level in state["sent_levels"]:
+            continue
+        state["sent_levels"].add(level)
+        token_state[addr] = state
+
+        # === SEND ALERT ===
+        msg = format_alert("PUMP", sym, addr, liq, fdv, vol, None, level)
+
+        sent = 0
+        async with save_lock:
+            for uid, u in list(users.items()):
+                if not u.get("chat_id"):
+                    continue
+                chat_id = u["chat_id"]
+                is_premium = u.get("paid") and (
+                    not u.get("paid_until") or
+                    datetime.fromisoformat(u["paid_until"]) > datetime.utcnow()
+                )
+                if u["free"] <= 0 and not is_premium:
+                    continue
+                f = u.get("filters", {})
+                if level not in f.get("levels", []) or "PUMP" not in f.get("chains", []):
+                    continue
+                await safe_send(app, chat_id, msg)
+                if u["free"] > 0:
+                    u["free"] -= 1
+                sent += 1
+
+        log.info(f"PUMP {level.upper()} → {sym} ({addr[:8]}...) | Vol ${vol:,.0f} | FDV ${fdv:,.0f} | Sent: {sent}")
+
+    except Exception as e:
+        log.error(f"Token process error: {e}", exc_info=True)
 
                 await asyncio.sleep(10)
 
