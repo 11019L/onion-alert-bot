@@ -178,7 +178,10 @@ def format_alert(chain, sym, addr, liq, fdv, vol, pair, level):
         f"5m Vol: ${vol:,.0f}\n"
         f"[View]({link})"
     )
-    def _debug_token(token: dict, addr: str, sym: str, fdv: float, liq: float, vol: float) -> str:
+# ──────────────────────────────────────────────────────────────
+#  DEBUG HELPER – MUST BE OUTSIDE ANY FUNCTION
+# ──────────────────────────────────────────────────────────────
+def _debug_token(token: dict, addr: str, sym: str, fdv: float, liq: float, vol: float) -> str:
     """
     Returns a one-line debug string that tells you:
       • Symbol & address (short)
@@ -186,22 +189,22 @@ def format_alert(chain, sym, addr, liq, fdv, vol, pair, level):
       • Source (NEW or GRADUATED)
       • Why it was skipped (if any)
     """
-    src = "NEW" if token.get("is_new") else "GRAD"
+    src = "NEW" if "new" in token.get("tags", []) else "GRAD"
     short = addr[:6] + "…" + addr[-4:]
 
-    # Reason why it would be filtered out
     reason = ""
     if fdv < 1000:
         reason = "FDV<1k"
     elif vol < 50:
         reason = "Vol<50"
-    # add more reasons if you want …
 
     return (
         f"PUMP DEBUG → {sym:<12} | {short} | "
         f"FDV ${fdv:>8,.0f} | Liq ${liq:>7,.0f} | Vol ${vol:>6,.0f} "
         f"| {src} {reason}"
     )
+
+
 
 # --------------------------------------------------------------------------- #
 #                               RUG / BUY                                   #
@@ -529,7 +532,7 @@ async def pump_scanner(app: Application):
                     await asyncio.sleep(10)
                     continue
 
-                # === PROCESS TOKENS (THIS IS INSIDE THE MAIN TRY) ===
+                                # === PROCESS TOKENS ===
                 for token in all_tokens:
                     try:
                         addr = token.get("tokenAddress") or token.get("mint") or ""
@@ -537,31 +540,35 @@ async def pump_scanner(app: Application):
                         if not addr or len(addr) < 10:
                             continue
 
-                        # Cooldown: 90 seconds
                         if addr in seen and time.time() - seen[addr] < 90:
                             continue
                         seen[addr] = time.time()
 
                         sym = str(token.get("symbol", "PUMP"))[:20]
 
-                        # FDV
-                        fdv = float(token.get("fullyDilutedValuation", 0) or token.get("fdv", 0) or 0)
+                        # === SAFE FLOATS ===
+                        def safe_float(val, default=0.0):
+                            if val is None or val == "":
+                                return default
+                            try:
+                                return float(val)
+                            except:
+                                return default
 
-                        # Liquidity
-                        liq = float(token.get("liquidity", 0))
+                        fdv = safe_float(token.get("fullyDilutedValuation") or token.get("fdv"))
+                        liq = safe_float(token.get("liquidity"))
                         if liq == 0 and fdv > 0:
                             liq = fdv * 0.12
 
-                        # Volume
-                        vol_raw = token.get("volume_5m") or token.get("volume", 0)
-                        vol = float(vol_raw)
+                        vol_raw = token.get("volume_5m") or token.get("volume")
+                        vol = safe_float(vol_raw)
                         if not token.get("volume_5m") and vol > 0:
                             vol = vol / 288
 
-                        # DEBUG LOG
-                        log.info(f"PUMP DEBUG → {sym} | FDV: ${fdv:,.0f} | Liq: ${liq:,.0f} | Vol: ${vol:,.0f}")
+                        # === DEBUG LOG (NOW CORRECT) ===
+                        log.info(_debug_token(token, addr, sym, fdv, liq, vol))
 
-                        # SAFE VOLUME SPIKE
+                        # === VOLUME SPIKE ===
                         prev_vols = list(volume_history[addr])
                         prev_vols.append(vol)
                         volume_history[addr] = deque(prev_vols[-3:], maxlen=3)
@@ -574,19 +581,16 @@ async def pump_scanner(app: Application):
                                 if vol >= avg_prev * 2.0:
                                     spike = True
 
-                        # ALERT LEVEL
                         level = get_alert_level(liq, fdv, vol, True, spike, False, "PUMP")
                         if not level:
                             continue
 
-                        # PREVENT DUPLICATES
                         state = token_state.get(addr, {"sent_levels": set()})
                         if level in state["sent_levels"]:
                             continue
                         state["sent_levels"].add(level)
                         token_state[addr] = state
 
-                        # SEND ALERT
                         msg = format_alert("PUMP", sym, addr, liq, fdv, vol, None, level)
 
                         sent = 0
@@ -609,16 +613,7 @@ async def pump_scanner(app: Application):
                                     u["free"] -= 1
                                 sent += 1
 
-                                         log.info(
-                            _debug_token(
-                                token=token,
-                                addr=addr,
-                                sym=sym,
-                                fdv=fdv,
-                                liq=liq,
-                                vol=vol,
-                            )
-                        )
+                        log.info(f"PUMP {level.upper()} → {sym} ({addr[:8]}...) | Vol ${vol:,.0f} | FDV ${fdv:,.0f} | Sent: {sent}")
 
                     except Exception as e:
                         log.error(f"Token process error: {e}", exc_info=True)
