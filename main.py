@@ -454,9 +454,9 @@ async def pump_scanner(app: Application):
                 all_tokens = []
                 seen_addrs = set()
 
-                # === NEW PUMP.FUN TOKENS ===
+                # === FETCH NEW PUMP.FUN TOKENS ===
                 try:
-                    params = {"limit": 50}  # Increased for more coverage
+                    params = {"limit": 50}
                     url = "https://solana-gateway.moralis.io/token/mainnet/exchange/pumpfun/new"
                     async with sess.get(url, headers=headers, params=params, timeout=15) as resp:
                         if resp.status == 200:
@@ -477,9 +477,9 @@ async def pump_scanner(app: Application):
                 except Exception as e:
                     log.warning(f"Moralis NEW error: {e}")
 
-                # === GRADUATED/TRENDING PUMP.FUN TOKENS (High-volume post-bonding) ===
+                # === FETCH GRADUATED PUMP.FUN TOKENS ===
                 try:
-                    params = {"limit": 50, "order": "volume.desc"}  # Sort by volume for "trending"
+                    params = {"limit": 50, "order": "volume.desc"}
                     url = "https://solana-gateway.moralis.io/token/mainnet/exchange/pumpfun/graduated"
                     async with sess.get(url, headers=headers, params=params, timeout=15) as resp:
                         if resp.status == 200:
@@ -505,96 +505,95 @@ async def pump_scanner(app: Application):
                     await asyncio.sleep(10)
                     continue
 
-                # === PROCESS TOKENS ===
-               # === PROCESS TOKENS ===
-for token in all_tokens:
-    try:
-        addr = token.get("tokenAddress") or token.get("mint") or ""
-        addr = str(addr)[:64]
-        if not addr or len(addr) < 10:
-            continue
+                # === PROCESS TOKENS (THIS IS INSIDE THE MAIN TRY) ===
+                for token in all_tokens:
+                    try:
+                        addr = token.get("tokenAddress") or token.get("mint") or ""
+                        addr = str(addr)[:64]
+                        if not addr or len(addr) < 10:
+                            continue
 
-        # Cooldown: 90 seconds
-        if addr in seen and time.time() - seen[addr] < 90:
-            continue
-        seen[addr] = time.time()
+                        # Cooldown: 90 seconds
+                        if addr in seen and time.time() - seen[addr] < 90:
+                            continue
+                        seen[addr] = time.time()
 
-        sym = str(token.get("symbol", "PUMP"))[:20]
+                        sym = str(token.get("symbol", "PUMP"))[:20]
 
-        # FDV
-        fdv = float(token.get("fullyDilutedValuation", 0) or token.get("fdv", 0) or 0)
+                        # FDV
+                        fdv = float(token.get("fullyDilutedValuation", 0) or token.get("fdv", 0) or 0)
 
-        # Liquidity: use direct, fallback to 12% of FDV
-        liq = float(token.get("liquidity", 0))
-        if liq == 0 and fdv > 0:
-            liq = fdv * 0.12
+                        # Liquidity
+                        liq = float(token.get("liquidity", 0))
+                        if liq == 0 and fdv > 0:
+                            liq = fdv * 0.12
 
-        # Volume: prefer 5m, else estimate from 24h
-        vol_raw = token.get("volume_5m") or token.get("volume", 0)
-        vol = float(vol_raw)
-        if not token.get("volume_5m") and vol > 0:
-            vol = vol / 288  # 24h → 5m estimate
+                        # Volume
+                        vol_raw = token.get("volume_5m") or token.get("volume", 0)
+                        vol = float(vol_raw)
+                        if not token.get("volume_5m") and vol > 0:
+                            vol = vol / 288
 
-        # === DEBUG LOG (remove later) ===
-        log.info(f"PUMP DEBUG → {sym} | FDV: ${fdv:,.0f} | Liq: ${liq:,.0f} | Vol: ${vol:,.0f}")
+                        # DEBUG LOG
+                        log.info(f"PUMP DEBUG → {sym} | FDV: ${fdv:,.0f} | Liq: ${liq:,.0f} | Vol: ${vol:,.0f}")
 
-        # === SAFE VOLUME SPIKE ===
-        prev_vols = list(volume_history[addr])
-        prev_vols.append(vol)
-        volume_history[addr] = deque(prev_vols[-3:], maxlen=3)
+                        # SAFE VOLUME SPIKE
+                        prev_vols = list(volume_history[addr])
+                        prev_vols.append(vol)
+                        volume_history[addr] = deque(prev_vols[-3:], maxlen=3)
 
-        spike = False
-        if len(prev_vols) >= 2:
-            recent_prev = [v for v in prev_vols[:-1] if v > 0]
-            if recent_prev:
-                avg_prev = sum(recent_prev) / len(recent_prev)
-                if vol >= avg_prev * 2.0:
-                    spike = True
+                        spike = False
+                        if len(prev_vols) >= 2:
+                            recent_prev = [v for v in prev_vols[:-1] if v > 0]
+                            if recent_prev:
+                                avg_prev = sum(recent_prev) / len(recent_prev)
+                                if vol >= avg_prev * 2.0:
+                                    spike = True
 
-        # === ALERT LEVEL ===
-        level = get_alert_level(liq, fdv, vol, True, spike, False, "PUMP")
-        if not level:
-            continue
+                        # ALERT LEVEL
+                        level = get_alert_level(liq, fdv, vol, True, spike, False, "PUMP")
+                        if not level:
+                            continue
 
-        # === PREVENT DUPLICATES ===
-        state = token_state.get(addr, {"sent_levels": set()})
-        if level in state["sent_levels"]:
-            continue
-        state["sent_levels"].add(level)
-        token_state[addr] = state
+                        # PREVENT DUPLICATES
+                        state = token_state.get(addr, {"sent_levels": set()})
+                        if level in state["sent_levels"]:
+                            continue
+                        state["sent_levels"].add(level)
+                        token_state[addr] = state
 
-        # === SEND ALERT ===
-        msg = format_alert("PUMP", sym, addr, liq, fdv, vol, None, level)
+                        # SEND ALERT
+                        msg = format_alert("PUMP", sym, addr, liq, fdv, vol, None, level)
 
-        sent = 0
-        async with save_lock:
-            for uid, u in list(users.items()):
-                if not u.get("chat_id"):
-                    continue
-                chat_id = u["chat_id"]
-                is_premium = u.get("paid") and (
-                    not u.get("paid_until") or
-                    datetime.fromisoformat(u["paid_until"]) > datetime.utcnow()
-                )
-                if u["free"] <= 0 and not is_premium:
-                    continue
-                f = u.get("filters", {})
-                if level not in f.get("levels", []) or "PUMP" not in f.get("chains", []):
-                    continue
-                await safe_send(app, chat_id, msg)
-                if u["free"] > 0:
-                    u["free"] -= 1
-                sent += 1
+                        sent = 0
+                        async with save_lock:
+                            for uid, u in list(users.items()):
+                                if not u.get("chat_id"):
+                                    continue
+                                chat_id = u["chat_id"]
+                                is_premium = u.get("paid") and (
+                                    not u.get("paid_until") or
+                                    datetime.fromisoformat(u["paid_until"]) > datetime.utcnow()
+                                )
+                                if u["free"] <= 0 and not is_premium:
+                                    continue
+                                f = u.get("filters", {})
+                                if level not in f.get("levels", []) or "PUMP" not in f.get("chains", []):
+                                    continue
+                                await safe_send(app, chat_id, msg)
+                                if u["free"] > 0:
+                                    u["free"] -= 1
+                                sent += 1
 
-        log.info(f"PUMP {level.upper()} → {sym} ({addr[:8]}...) | Vol ${vol:,.0f} | FDV ${fdv:,.0f} | Sent: {sent}")
+                        log.info(f"PUMP {level.upper()} → {sym} ({addr[:8]}...) | Vol ${vol:,.0f} | FDV ${fdv:,.0f} | Sent: {sent}")
 
-    except Exception as e:
-        log.error(f"Token process error: {e}", exc_info=True)
+                    except Exception as e:
+                        log.error(f"Token process error: {e}", exc_info=True)
 
                 await asyncio.sleep(10)
 
             except Exception as e:
-                log.error(f"PUMP SCANNER CRASH: {e}")
+                log.error(f"PUMP SCANNER FATAL: {e}", exc_info=True)
                 await asyncio.sleep(15)
 
 # --------------------------------------------------------------------------- #
