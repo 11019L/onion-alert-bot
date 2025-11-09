@@ -442,7 +442,10 @@ async def pump_scanner(app: Application):
         "accept": "application/json",
         "X-API-Key": MORALIS_API_KEY
     }
-    log.info("PUMP SCANNER: Starting with Moralis Pump.fun APIs")
+    log.info("PUMP SCANNER: Starting with Moralis (2025) + Pump.fun detection")
+
+    # Pump.fun creator address (official)
+    PUMP_FUN_PROGRAM = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"
 
     volume_history = defaultdict(lambda: deque(maxlen=3))
 
@@ -452,92 +455,111 @@ async def pump_scanner(app: Application):
                 all_tokens = []
                 seen_addrs = set()
 
-                # === NEW TOKENS ===
+                # === FETCH NEW TOKENS FROM MORALIS (ALL, NOT FILTERED) ===
                 try:
-                    params = {
-                        "network": "mainnet",
-                        "exchange": "pumpfun",
-                        "limit": 20
-                    }
                     url = "https://deep-index.moralis.io/api/v2.2/solana/new-tokens"
-                    async with sess.get(url, headers=headers, params=params, timeout=15) as resp:
-                        if resp.status == 200:
-                            data = await resp.json()
-                            new_tokens = data.get("result", [])
-                            if new_tokens:
-                                log.info(f"Moralis NEW Pump.fun: {len(new_tokens)} tokens")
-                                for t in new_tokens:
-                                    addr = t.get("mint") or t.get("tokenAddress") or ""
-                                    addr = str(addr)[:64]
-                                    if addr and len(addr) >= 10 and addr not in seen_addrs:
-                                        seen_addrs.add(addr)
-                                        all_tokens.append(t)
-                            else:
-                                log.info("Moralis NEW: empty result")
-                        else:
-                            log.warning(f"Moralis NEW HTTP {resp.status}")
-                except Exception as e:
-                    log.warning(f"Moralis NEW error: {e}")
-
-                # === TRENDING TOKENS ===
-                try:
                     params = {
                         "network": "mainnet",
-                        "exchange": "pumpfun",
-                        "limit": 30,
-                        "order": "volume_5m.desc"
+                        "limit": 50,  # Max allowed
+                        "include_metadata": "true"
                     }
-                    url = "https://deep-index.moralis.io/api/v2.2/solana/tokens"
                     async with sess.get(url, headers=headers, params=params, timeout=15) as resp:
-                        if resp.status == 200:
-                            data = await resp.json()
-                            trending = data.get("result", [])
-                            if trending:
-                                log.info(f"Moralis TRENDING Pump.fun: {len(trending)} tokens")
-                                for t in trending:
-                                    addr = t.get("mint") or t.get("tokenAddress") or ""
-                                    addr = str(addr)[:64]
-                                    if addr and len(addr) >= 10 and addr not in seen_addrs:
-                                        seen_addrs.add(addr)
-                                        all_tokens.append(t)
+                        if resp.status != 200:
+                            log.warning(f"Moralis NEW HTTP {resp.status}")
+                            await asyncio.sleep(10)
+                            continue
+                        data = await resp.json()
+                        tokens = data.get("result", [])
+                        log.info(f"Moralis NEW: {len(tokens)} raw tokens")
+
+                        for t in tokens:
+                            mint = t.get("mint") or t.get("tokenAddress")
+                            if not mint or len(mint) < 30:
+                                continue
+                            if mint in seen_addrs:
+                                continue
+
+                            # === DETECT PUMP.FUN TOKENS ===
+                            metadata = t.get("metadata", {}) or {}
+                            creator = metadata.get("creator") or t.get("creator")
+                            program = t.get("program") or metadata.get("program")
+
+                            # Pump.fun tokens have creator = 6EF8...F6P
+                            if str(creator) == PUMP_FUN_PROGRAM or str(program) == PUMP_FUN_PROGRAM:
+                                t["is_pumpfun"] = True
+                                seen_addrs.add(mint)
+                                all_tokens.append(t)
                             else:
-                                log.info("Moralis TRENDING: empty result")
-                        else:
-                            log.warning(f"Moralis TRENDING HTTP {resp.status}")
+                                # Optional: check bonding curve or market ID
+                                pass
+
                 except Exception as e:
-                    log.warning(f"Moralis TRENDING error: {e}")
+                    log.error(f"Moralis NEW fetch error: {e}")
+
+                # === FETCH TOP VOLUME TOKENS & FILTER PUMP.FUN ===
+                try:
+                    url = "https://deep-index.moralis.io/api/v2.2/solana/tokens"
+                    params = {
+                        "network": "mainnet",
+                        "limit": 100,
+                        "order": "volume_5m.desc",
+                        "include_metadata": "true"
+                    }
+                    async with sess.get(url, headers=headers, params=params, timeout=15) as resp:
+                        if resp.status != 200:
+                            log.warning(f"Moralis TRENDING HTTP {resp.status}")
+                        else:
+                            data = await resp.json()
+                            tokens = data.get("result", [])
+                            log.info(f"Moralis TRENDING: {len(tokens)} raw tokens")
+
+                            for t in tokens:
+                                mint = t.get("mint") or t.get("tokenAddress")
+                                if not mint or len(mint) < 30 or mint in seen_addrs:
+                                    continue
+
+                                metadata = t.get("metadata", {}) or {}
+                                creator = metadata.get("creator") or t.get("creator")
+                                program = t.get("program") or metadata.get("program")
+
+                                if str(creator) == PUMP_FUN_PROGRAM or str(program) == PUMP_FUN_PROGRAM:
+                                    t["is_pumpfun"] = True
+                                    seen_addrs.add(mint)
+                                    all_tokens.append(t)
+
+                except Exception as e:
+                    log.error(f"Moralis TRENDING fetch error: {e}")
 
                 if not all_tokens:
-                    log.info("Moralis Pump.fun: No tokens this cycle")
-                    await asyncio.sleep(10)
+                    log.info("PUMP SCANNER: No Pump.fun tokens this cycle")
+                    await asyncio.sleep(12)
                     continue
 
-                # === PROCESS TOKENS ===
+                log.info(f"PUMP SCANNER: Processing {len(all_tokens)} Pump.fun tokens")
+
+                # === PROCESS PUMP.FUN TOKENS ===
                 for token in all_tokens:
                     try:
-                        addr = token.get("mint") or token.get("tokenAddress") or ""
-                        addr = str(addr)[:64]
-                        if not addr or len(addr) < 10:
+                        addr = token.get("mint") or token.get("tokenAddress")
+                        if not addr or len(addr) < 30:
                             continue
+                        addr = str(addr)
 
-                        if addr in seen and time.time() - seen[addr] < 300:
+                        if addr in seen and time.time() - seen[addr] < 180:  # 3 min cooldown
                             continue
                         seen[addr] = time.time()
 
-                        sym = str(token.get("symbol", "???"))[:20]
+                        sym = str(token.get("symbol", "PUMP"))[:20]
                         vol = float(token.get("volume_5m", 0) or token.get("volumeUSD", 0) or 0)
                         fdv = float(token.get("fdv", 0) or token.get("marketCapUSD", 0) or 0)
-                        liq = fdv * 0.1 if fdv > 0 else 0
+                        liq = fdv * 0.12 if fdv > 0 else 0  # Pump.fun liq ~12%
 
+                        # Volume spike detection
                         prev_vols = volume_history[addr]
                         prev_vols.append(vol)
-                        spike = False
-                        if len(prev_vols) > 1:
-                            avg_prev = sum(prev_vols[:-1]) / len(prev_vols[:-1])
-                            if avg_prev > 0 and vol / avg_prev >= 2.0:
-                                spike = True
+                        spike = len(prev_vols) > 1 and vol > 0 and (vol / (sum(prev_vols[:-1]) / len(prev_vols[:-1]))) >= 2.0
 
-                        level = get_alert_level(liq, fdv, vol, True, spike, False, "PUMP")
+                        level = get_alert_level(liq, fdv, vol, new=True, spike=spike, buy=False, chain="PUMP")
                         if not level:
                             continue
 
@@ -549,32 +571,33 @@ async def pump_scanner(app: Application):
 
                         msg = format_alert("PUMP", sym, addr, liq, fdv, vol, None, level)
                         sent = 0
-                        for uid, u in list(users.items()):
-                            if "chat_id" not in u or not u["chat_id"]:
-                                continue
-                            chat_id = u["chat_id"]
-                            is_premium = u.get("paid") and (
-                                u.get("paid_until") is None or
-                                datetime.fromisoformat(u["paid_until"]) > datetime.utcnow()
-                            )
-                            if u["free"] <= 0 and not is_premium:
-                                continue
-                            f = u.get("filters", {})
-                            if level not in f.get("levels", []) or "PUMP" not in f.get("chains", []):
-                                continue
-                            await safe_send(app, chat_id, msg)
-                            if u["free"] > 0:
-                                u["free"] -= 1
-                            sent += 1
-                        log.info(f"PUMP {level.upper()} -> {addr} | Vol: ${vol:,.0f} | Sent to {sent}")
+                        async with save_lock:
+                            for uid, u in list(users.items()):
+                                if not u.get("chat_id"):
+                                    continue
+                                chat_id = u["chat_id"]
+                                is_premium = u.get("paid") and (
+                                    not u.get("paid_until") or
+                                    datetime.fromisoformat(u["paid_until"]) > datetime.utcnow()
+                                )
+                                if u["free"] <= 0 and not is_premium:
+                                    continue
+                                f = u.get("filters", {})
+                                if level not in f.get("levels", []) or "PUMP" not in f.get("chains", []):
+                                    continue
+                                await safe_send(app, chat_id, msg)
+                                if u["free"] > 0:
+                                    u["free"] -= 1
+                                sent += 1
+                        log.info(f"PUMP {level.upper()} → {sym} ({addr[:8]}) | Vol ${vol:,.0f} | Sent: {sent}")
 
                     except Exception as e:
-                        log.error(f"Token error: {e}")
+                        log.error(f"Pump token process error: {e}")
 
-                await asyncio.sleep(10)
+                await asyncio.sleep(12)
 
             except Exception as e:
-                log.error(f"PUMP SCANNER CRASH: {e}")
+                log.error(f"PUMP SCANNER FATAL: {e}")
                 await asyncio.sleep(15)
 
 # --------------------------------------------------------------------------- #
