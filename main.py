@@ -178,6 +178,30 @@ def format_alert(chain, sym, addr, liq, fdv, vol, pair, level):
         f"5m Vol: ${vol:,.0f}\n"
         f"[View]({link})"
     )
+    def _debug_token(token: dict, addr: str, sym: str, fdv: float, liq: float, vol: float) -> str:
+    """
+    Returns a one-line debug string that tells you:
+      • Symbol & address (short)
+      • FDV / Liquidity / 5-min Volume
+      • Source (NEW or GRADUATED)
+      • Why it was skipped (if any)
+    """
+    src = "NEW" if token.get("is_new") else "GRAD"
+    short = addr[:6] + "…" + addr[-4:]
+
+    # Reason why it would be filtered out
+    reason = ""
+    if fdv < 1000:
+        reason = "FDV<1k"
+    elif vol < 50:
+        reason = "Vol<50"
+    # add more reasons if you want …
+
+    return (
+        f"PUMP DEBUG → {sym:<12} | {short} | "
+        f"FDV ${fdv:>8,.0f} | Liq ${liq:>7,.0f} | Vol ${vol:>6,.0f} "
+        f"| {src} {reason}"
+    )
 
 # --------------------------------------------------------------------------- #
 #                               RUG / BUY                                   #
@@ -585,7 +609,16 @@ async def pump_scanner(app: Application):
                                     u["free"] -= 1
                                 sent += 1
 
-                        log.info(f"PUMP {level.upper()} → {sym} ({addr[:8]}...) | Vol ${vol:,.0f} | FDV ${fdv:,.0f} | Sent: {sent}")
+                                         log.info(
+                            _debug_token(
+                                token=token,
+                                addr=addr,
+                                sym=sym,
+                                fdv=fdv,
+                                liq=liq,
+                                vol=vol,
+                            )
+                        )
 
                     except Exception as e:
                         log.error(f"Token process error: {e}", exc_info=True)
